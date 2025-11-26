@@ -1623,13 +1623,21 @@ async function createShareLink(){
     gearH = Math.round(r.height || 52);
   }
   function getHitFabRect(){
-    const fab = document.getElementById('hit-fab');
+    // 优先找 host（容器），其次 toggle（按钮），最后兼容旧版 hit-fab
+    const targets = ['hit-fab-host', 'hit-fab-toggle', 'hit-fab'];
+    let fab = null;
+    for (const id of targets) {
+      const el = document.getElementById(id);
+      if (el) {
+        const cs = getComputedStyle(el);
+        if (cs.display !== 'none' && cs.visibility !== 'hidden') {
+          const r = el.getBoundingClientRect();
+          if (r.width > 0 && r.height > 0) { fab = el; break; }
+        }
+      }
+    }
     if (!fab) return null;
-    const cs = getComputedStyle(fab);
-    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
-    const rect = fab.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return null;
-    return rect;
+    return fab.getBoundingClientRect();
   }
   function overlapIf(bottomCandidate){
     // 预测在 bottomCandidate 时，齿轮与 #hit-fab 是否相交（带 THRESH 缓冲）
@@ -1714,10 +1722,10 @@ async function createShareLink(){
     const ro = new ResizeObserver(() => schedule());
     // #hit-fab 与面板可能晚到，这里定期挂钩
     const hook = () => {
-      const f = document.getElementById('hit-fab');
-      if (f && !f._kbObserved) { ro.observe(f); f._kbObserved = true; }
-      const p = document.getElementById('hit-fab-panel');
-      if (p && !p._kbObserved) { ro.observe(p); p._kbObserved = true; }
+      ['hit-fab-host', 'hit-fab-toggle', 'hit-fab', 'hit-fab-panel'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el && !el._kbObserved) { ro.observe(el); el._kbObserved = true; }
+      });
     };
     hook();
     setInterval(hook, 800);
