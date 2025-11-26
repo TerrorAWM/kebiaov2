@@ -11,7 +11,21 @@ ini_set('display_errors', 1);
 if (file_exists(__DIR__ . '/../config.php')) {
     require_once __DIR__ . '/../config.php';
     if (defined('INSTALLED') && INSTALLED === true) {
-        die('系统已安装！如需重新安装，请删除 config 文件。');
+        $current_step = $_GET['step'] ?? 1;
+        
+        // 如果不是在第3步（完成页面），则返回404
+        if ($current_step != 3) {
+            http_response_code(404);
+            // 输出标准的404页面，不暴露任何系统信息
+            exit('<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>404 Not Found</title>
+</head><body>
+<h1>Not Found</h1>
+<p>The requested URL was not found on this server.</p>
+</body></html>');
+        }
+        // step=3时允许显示完成页面
     }
 }
 
@@ -320,10 +334,33 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <div class="text-center py-5">
                         <i class="bi bi-check-circle success-icon"></i>
                         <h4 class="text-success mt-3 mb-2">安装成功！</h4>
-                        <p class="text-muted mb-4">课表系统已成功安装，您现在可以开始使用了。</p>
-                        <div class="d-grid gap-2 col-md-6 mx-auto">
-                            <a href="../index.php" class="btn btn-primary btn-lg">
-                                <i class="bi bi-box-arrow-in-right"></i> 进入系统
+                        <p class="text-muted mb-4">课表系统已成功安装并配置完成。</p>
+                        
+                        <div class="alert alert-success text-start mb-4">
+                            <h6 class="alert-heading"><i class="bi bi-check2-square"></i> 安装完成清单</h6>
+                            <ul class="mb-0 small">
+                                <li>✓ 数据库表已创建</li>
+                                <li>✓ 配置文件已生成</li>
+                                <li>✓ 系统已锁定（install目录已禁用访问）</li>
+                            </ul>
+                        </div>
+                        
+                        <div class="alert alert-warning text-start mb-4">
+                            <h6 class="alert-heading"><i class="bi bi-shield-exclamation"></i> 安全提示</h6>
+                            <p class="small mb-2">为了系统安全，建议您：</p>
+                            <ul class="mb-0 small">
+                                <li>立即注册管理员账号</li>
+                                <li>妥善保管数据库连接信息</li>
+                                <li>定期备份数据</li>
+                            </ul>
+                        </div>
+                        
+                        <div class="d-grid gap-2 col-md-8 mx-auto">
+                            <a href="../register.php" class="btn btn-success btn-lg">
+                                <i class="bi bi-person-plus"></i> 立即注册账号
+                            </a>
+                            <a href="../index.php" class="btn btn-outline-primary">
+                                <i class="bi bi-box-arrow-in-right"></i> 进入系统首页
                             </a>
                         </div>
                     </div>
