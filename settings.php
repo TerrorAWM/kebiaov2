@@ -123,14 +123,13 @@ if (!is_logged_in()) { header('Location: index.php'); exit; }
     <div class="card">
       <div class="card-body vstack gap-3">
         <div>
-          <label class="form-label">课表 ID（唯一标识）</label>
+          <label class="form-label">课表 ID</label>
           <input class="form-control" value="<?=(int)$_SESSION['uid']?>" readonly disabled>
-          <div class="form-text">ID 注册后不可更改。</div>
         </div>
         <div>
           <label class="form-label">邮箱（可选）</label>
           <div class="input-group">
-            <input class="form-control" id="inp_email" placeholder="用于找回密码（暂未实现）">
+            <input class="form-control" id="inp_email" placeholder="用于找回密码（暂未开放）">
             <button class="btn btn-outline-primary" onclick="saveEmail()">保存</button>
           </div>
         </div>
