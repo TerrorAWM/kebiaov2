@@ -8,7 +8,8 @@
 if (!file_exists(__DIR__ . '/config.php')) {
     // 如果配置文件不存在，重定向到安装页面
     if (!defined('INSTALLING') && php_sapi_name() !== 'cli') {
-        header('Location: /install/');
+        $install_path = rtrim(dirname($_SERVER['PHP_SELF']), '/') . '/install/';
+        header('Location: ' . $install_path);
         exit;
     }
     // CLI或安装过程中，使用默认配置
