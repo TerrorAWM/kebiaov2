@@ -37,7 +37,7 @@ if (isset($_GET['api'])) {
 
     // 获取当前信息
     if ($api === 'info') {
-        $stmt = $pdo->prepare('SELECT user_id, email FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt = $pdo->prepare('SELECT user_id, email FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
         $stmt->execute([$uid]);
         $row = $stmt->fetch();
         if (!$row) json_out(['ok'=>false,'error'=>'用户不存在'], 404);
@@ -50,7 +50,7 @@ if (isset($_GET['api'])) {
         if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
             json_out(['ok'=>false,'error'=>'邮箱格式无效'], 400);
         }
-        $stmt = $pdo->prepare('UPDATE user_accounts SET email = ? WHERE user_id = ?');
+        $stmt = $pdo->prepare('UPDATE ' . table('user_accounts') . ' SET email = ? WHERE user_id = ?');
         $stmt->execute([$email, $uid]);
         json_out(['ok'=>true]);
     }
@@ -66,27 +66,27 @@ if (isset($_GET['api'])) {
         if ($new1 !== $new2) json_out(['ok'=>false,'error'=>'两次新密码输入不一致'], 400);
 
         // 验证旧密码
-        $stmt = $pdo->prepare('SELECT pin FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt = $pdo->prepare('SELECT pin FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
         $stmt->execute([$uid]);
         $row = $stmt->fetch();
         if (!$row || (string)$row['pin'] !== $old) json_out(['ok'=>false,'error'=>'原密码错误'], 403);
 
         // 更新
-        $stmt = $pdo->prepare('UPDATE user_accounts SET pin = ? WHERE user_id = ?');
+        $stmt = $pdo->prepare('UPDATE ' . table('user_accounts') . ' SET pin = ? WHERE user_id = ?');
         $stmt->execute([$new1, $uid]);
         json_out(['ok'=>true]);
     }
 
     // 危险操作：清空主课表
     if ($api === 'clear_main' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-        $stmt = $pdo->prepare('DELETE FROM user_schedule WHERE user_id = ?');
+        $stmt = $pdo->prepare('DELETE FROM ' . table('user_schedule') . ' WHERE user_id = ?');
         $stmt->execute([$uid]);
         json_out(['ok'=>true]);
     }
 
     // 危险操作：清空实验课表
     if ($api === 'clear_lab' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-        $stmt = $pdo->prepare('DELETE FROM user_lab_schedule WHERE user_id = ?');
+        $stmt = $pdo->prepare('DELETE FROM ' . table('user_lab_schedule') . ' WHERE user_id = ?');
         $stmt->execute([$uid]);
         json_out(['ok'=>true]);
     }

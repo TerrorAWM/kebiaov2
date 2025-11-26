@@ -43,7 +43,7 @@ function link_login_user(): ?int {
     if (!is_string($sid) || !preg_match('/^\d{4,6}$/', $sid))  { $cached = 0; return null; }
     if (!is_string($pass) || !preg_match('/^\d{4}$/',  $pass)) { $cached = 0; return null; }
 
-    $stmt = db()->prepare('SELECT user_id, pin FROM user_accounts WHERE user_id = ? LIMIT 1');
+    $stmt = db()->prepare('SELECT user_id, pin FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
     $stmt->execute([$sid]); $row = $stmt->fetch();
     if (!$row || (string)$row['pin'] !== $pass) { $cached = 0; return null; }
 
@@ -94,14 +94,14 @@ function share_require_owner(): int {
 function generate_token(): string {
     for ($i=0; $i<6; $i++) {
         $t = bin2hex(random_bytes(16));
-        $q = db()->prepare('SELECT 1 FROM shared_links WHERE token = ?');
+        $q = db()->prepare('SELECT 1 FROM ' . table('shared_links') . ' WHERE token = ?');
         $q->execute([$t]);
         if (!$q->fetch()) return $t;
     }
     throw new RuntimeException('生成分享令牌失败，请重试');
 }
 function generate_share_pass(int $uid): string {
-    $stmt = db()->prepare('SELECT pin FROM user_accounts WHERE user_id = ?');
+    $stmt = db()->prepare('SELECT pin FROM ' . table('user_accounts') . ' WHERE user_id = ?');
     $stmt->execute([$uid]);
     $mainPin = (string)($stmt->fetch()['pin'] ?? '');
     do {
@@ -113,7 +113,7 @@ function generate_share_pass(int $uid): string {
 function get_share_limit(?int $uid): ?int {
     $limit = 5;
     if (!$uid) return $limit;
-    $q = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
+    $q = db()->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id = ?');
     $q->execute([$uid]);
     if ($row = $q->fetch()) {
         $pro = json_decode($row['profile'] ?? '{}', true) ?: [];
@@ -132,7 +132,7 @@ if (isset($_GET['api'])) {
         $uid = $_POST['uid'] ?? ''; $pin = $_POST['pin'] ?? '';
         if (!preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字'], 400);
         if (!preg_match('/^\d{4}$/', $pin))  json_out(['ok'=>false,'error'=>'密码必须为 4 位数字'], 400);
-        $stmt = db()->prepare('SELECT user_id, pin, profile FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt = db()->prepare('SELECT user_id, pin, profile FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
         $stmt->execute([$uid]); $row = $stmt->fetch();
         if (!$row || $row['pin'] !== $pin) json_out(['ok'=>false,'error'=>'账号或密码错误'], 403);
         $_SESSION['uid'] = (int)$row['user_id']; json_out(['ok'=>true]);
@@ -145,7 +145,7 @@ if (isset($_GET['api'])) {
         $uid = require_login(); $payload = json_decode(file_get_contents('php://input'), true) ?: [];
         $tz = $payload['tz'] ?? '';
         if ($tz === '' || @new DateTimeZone($tz) === false) json_out(['ok'=>false,'error'=>'无效的时区'], 400);
-        $sql = "UPDATE user_accounts SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
+        $sql = "UPDATE ' . table('user_accounts') . ' SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
         db()->prepare($sql)->execute([$tz, $uid]); json_out(['ok'=>true]);
     }
 
@@ -160,7 +160,7 @@ if (isset($_GET['api'])) {
         foreach ($fields as $f) if (in_array($f, $allow, true)) $clean[] = $f;
         if (empty($clean)) $clean = ['name','teacher','room'];
         $json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
-        $sql = "UPDATE user_accounts SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.cell_fields', CAST(? AS JSON)) WHERE user_id = ?";
+        $sql = "UPDATE ' . table('user_accounts') . ' SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.cell_fields', CAST(? AS JSON)) WHERE user_id = ?";
         db()->prepare($sql)->execute([$json, $uid]);
         json_out(['ok'=>true]);
     }
@@ -175,16 +175,16 @@ if (isset($_GET['api'])) {
         if ($idx < 0) json_out(['ok'=>false,'error'=>'无效的课程索引'], 400);
         if (mb_strlen($note) > 200) $note = mb_substr($note, 0, 200);
         $path = '$.courses['.$idx.'].note';
-        $sql  = "UPDATE user_schedule SET data = JSON_SET(data, '$path', ?) WHERE user_id = ?";
+        $sql  = "UPDATE ' . table('user_schedule') . ' SET data = JSON_SET(data, '$path', ?) WHERE user_id = ?";
         db()->prepare($sql)->execute([$note, $uid]);
         json_out(['ok'=>true]);
     }
 
     if ($api === 'me') {
         $uid = require_login();
-        $u = db()->prepare('SELECT user_id, profile FROM user_accounts WHERE user_id = ?');
+        $u = db()->prepare('SELECT user_id, profile FROM ' . table('user_accounts') . ' WHERE user_id = ?');
         $u->execute([$uid]); $user = $u->fetch();
-        $s = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
+        $s = db()->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id = ?');
         $s->execute([$uid]); $sch = $s->fetch();
         json_out(['ok'=>true, 'user'=>$user, 'schedule'=>$sch]);
     }
@@ -195,7 +195,7 @@ if (isset($_GET['api'])) {
         // 限制检查
         $limit = get_share_limit($uid); // null 表示无限制
         if ($limit !== null) {
-            $c = db()->prepare('SELECT COUNT(*) AS n FROM shared_links WHERE user_id=? AND disabled=0');
+            $c = db()->prepare('SELECT COUNT(*) AS n FROM ' . table('shared_links') . ' WHERE user_id=? AND disabled=0');
             $c->execute([$uid]); $n = (int)($c->fetch()['n'] ?? 0);
             if ($n >= $limit) json_out(['ok'=>false,'error'=>"已达到分享上限（{$limit} 个）"], 400);
         }
@@ -254,7 +254,7 @@ if (isset($_GET['api'])) {
         $token = generate_token();
         $share_pass = generate_share_pass($uid);
 
-        $ins = db()->prepare('INSERT INTO shared_links(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
+        $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
         $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
 
         $url = base_url().'/share_kb.php?token='.rawurlencode($token).'&pass='.rawurlencode($share_pass);
@@ -263,7 +263,7 @@ if (isset($_GET['api'])) {
 
     if ($api === 'share_list') {
         $uid = share_require_owner();
-        $rows = db()->prepare('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM shared_links WHERE user_id=? ORDER BY id DESC');
+        $rows = db()->prepare('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC');
         $rows->execute([$uid]);
         $out = [];
         while ($r = $rows->fetch()) {
@@ -299,10 +299,10 @@ if (isset($_GET['api'])) {
         $payload = json_decode(file_get_contents('php://input'), true) ?: [];
         $id = (int)($payload['id'] ?? 0);
         if ($id <= 0) json_out(['ok'=>false,'error'=>'无效的链接ID'], 400);
-        $chk = db()->prepare('SELECT id FROM shared_links WHERE id=? AND user_id=?');
+        $chk = db()->prepare('SELECT id FROM ' . table('shared_links') . ' WHERE id=? AND user_id=?');
         $chk->execute([$id, $uid]);
         if (!$chk->fetch()) json_out(['ok'=>false,'error'=>'记录不存在或无权操作'], 404);
-        db()->prepare('UPDATE shared_links SET disabled=1 WHERE id=?')->execute([$id]);
+        db()->prepare('UPDATE ' . table('shared_links') . ' SET disabled=1 WHERE id=?')->execute([$id]);
         json_out(['ok'=>true]);
     }
 
@@ -340,11 +340,11 @@ if ($logged) {
     $uid = ($LOGIN_MODE === 'session') ? (int)$_SESSION['uid'] : (int)link_login_user();
     $uid_out = $uid;
 
-    $u = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
+    $u = db()->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id = ?');
     $u->execute([$uid]); $upro = $u->fetch();
     $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : [];
 
-    $s = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
+    $s = db()->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id = ?');
     $s->execute([$uid]); $sch = $s->fetch();
     $schedule = $sch ? (json_decode($sch['data'] ?? '{}', true) ?: []) : [];
 

@@ -35,7 +35,7 @@ function json_out($arr, int $code = 200): void {
 function is_logged_in(): bool { return isset($_SESSION['uid']) && is_numeric($_SESSION['uid']); }
 function current_uid(): ?int { return is_logged_in() ? (int)$_SESSION['uid'] : null; }
 function try_get_main_schedule(int $uid): array {
-    $stmt = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ? LIMIT 1');
+    $stmt = db()->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id = ? LIMIT 1');
     $stmt->execute([$uid]);
     $row = $stmt->fetch();
     if (!$row) return [];
@@ -44,7 +44,7 @@ function try_get_main_schedule(int $uid): array {
     return is_array($obj) ? $obj : [];
 }
 function try_get_lab_schedule(int $uid): array {
-    $stmt = db()->prepare('SELECT data FROM user_lab_schedule WHERE user_id = ? LIMIT 1');
+    $stmt = db()->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id = ? LIMIT 1');
     $stmt->execute([$uid]);
     $row = $stmt->fetch();
     if (!$row) return [];
@@ -107,7 +107,7 @@ if (isset($_GET['api'])) {
         $pin = $_POST['pin'] ?? '';
         if (!preg_match('/^\d{4,6}$/', (string)$uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字'], 400);
         if (!preg_match('/^\d{4}$/', (string)$pin))  json_out(['ok'=>false,'error'=>'密码必须为 4 位数字'], 400);
-        $stmt = db()->prepare('SELECT user_id, pin FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt = db()->prepare('SELECT user_id, pin FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
         $stmt->execute([$uid]);
         $row = $stmt->fetch();
         if (!$row || (string)$row['pin'] !== (string)$pin) json_out(['ok'=>false,'error'=>'账号或密码错误'], 403);
@@ -212,7 +212,7 @@ if (isset($_GET['api'])) {
 
             // 记录 lab_uploads（可选）
             try {
-                $ins = db()->prepare('INSERT INTO lab_uploads (user_id, filename, mimetype, size_bytes, parsed_json) VALUES (?, ?, ?, ?, ?)');
+                $ins = db()->prepare('INSERT INTO ' . table('lab_uploads') . ' (user_id, filename, mimetype, size_bytes, parsed_json) VALUES (?, ?, ?, ?, ?)');
                 $ins->execute([
                     (int)$uid,
                     (string)($_FILES['file']['name'] ?? ''),
@@ -362,7 +362,7 @@ if (isset($_GET['api'])) {
         ];
         $json = json_encode($doc, JSON_UNESCAPED_UNICODE);
 
-        $sql = 'INSERT INTO user_lab_schedule (user_id, data) VALUES (?, ?)
+        $sql = 'INSERT INTO ' . table('user_lab_schedule') . ' (user_id, data) VALUES (?, ?)
                 ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = CURRENT_TIMESTAMP';
         db()->prepare($sql)->execute([(int)$uid, $json]);
         json_out(['ok'=>true]);

@@ -67,7 +67,7 @@ if (!preg_match('/^[a-f0-9]{32}$/i', $token)) {
 }
 
 $link = (function($token){
-    $st = db()->prepare('SELECT * FROM shared_links WHERE token = ? LIMIT 1');
+    $st = db()->prepare('SELECT * FROM ' . table('shared_links') . ' WHERE token = ? LIMIT 1');
     $st->execute([$token]);
     return $st->fetch() ?: null;
 })($token);
@@ -102,7 +102,7 @@ if (!is_string($pass) || !preg_match('/^\d{4}$/', $pass) || $pass !== (string)$l
 
 // ======= 通过校验：自增访问计数（不超过上限，且未禁用） =======
 try {
-    $u = db()->prepare('UPDATE shared_links SET visit_count = visit_count + 1 
+    $u = db()->prepare('UPDATE ' . table('shared_links') . ' SET visit_count = visit_count + 1 
         WHERE id = ? AND disabled = 0 AND (max_visits IS NULL OR visit_count < max_visits)');
     $u->execute([$link['id']]);
 } catch (Throwable $e) { /* 忽略自增异常，不影响展示 */ }
@@ -129,7 +129,7 @@ $schRow = $sch->fetch();
 $schedule = $schRow ? (json_decode($schRow['data'] ?? '{}', true) ?: []) : [];
 
 // 用户 profile（可能包含 tz_timetable 之类）
-$upro = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
+$upro = db()->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id = ?');
 $upro->execute([$owner_id]);
 $uproRow = $upro->fetch();
 $profile = $uproRow ? (json_decode($uproRow['profile'] ?? '{}', true) ?: []) : [];

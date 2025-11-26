@@ -54,7 +54,7 @@ if (isset($_GET['api'])) {
     if (!preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'用户ID格式不正确']);
     if (!preg_match('/^\d{4}$/', $pin))  json_out(['ok'=>false,'error'=>'PIN格式不正确']);
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT pin FROM user_accounts WHERE user_id=? LIMIT 1');
+    $stmt = $pdo->prepare('SELECT pin FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
     $stmt->execute([(int)$uid]);
     $row = $stmt->fetch();
     if (!$row || (string)$row['pin'] !== $pin) json_out(['ok'=>false,'error'=>'用户ID或PIN错误']);
@@ -80,7 +80,7 @@ if (isset($_GET['api'])) {
     $pdo = db();
 
     // 读取 profile
-    $stmt = $pdo->prepare('SELECT profile FROM user_accounts WHERE user_id=? LIMIT 1');
+    $stmt = $pdo->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
     $stmt->execute([$uid]);
     $acc = $stmt->fetch();
     $profile = [];
@@ -93,7 +93,7 @@ if (isset($_GET['api'])) {
     }
 
     // 读取 schedule
-    $stmt2 = $pdo->prepare('SELECT data FROM user_schedule WHERE user_id=? LIMIT 1');
+    $stmt2 = $pdo->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id=? LIMIT 1');
     $stmt2->execute([$uid]);
     $sch = $stmt2->fetch();
     $schedule = [
@@ -176,19 +176,19 @@ if (isset($_GET['api'])) {
     $pdo->beginTransaction();
     try {
       // update schedule
-      $stmtU = $pdo->prepare('UPDATE user_schedule SET data=?, updated_at=NOW() WHERE user_id=?');
+      $stmtU = $pdo->prepare('UPDATE ' . table('user_schedule') . ' SET data=?, updated_at=NOW() WHERE user_id=?');
       $ok1 = false;
       try {
         $ok1 = $stmtU->execute([json_encode($schedule, JSON_UNESCAPED_UNICODE), $uid]);
       } catch (Throwable $e) {
         // 如果没有 updated_at 列（老表），退化为不更新该列
-        $stmtU = $pdo->prepare('UPDATE user_schedule SET data=? WHERE user_id=?');
+        $stmtU = $pdo->prepare('UPDATE ' . table('user_schedule') . ' SET data=? WHERE user_id=?');
         $ok1 = $stmtU->execute([json_encode($schedule, JSON_UNESCAPED_UNICODE), $uid]);
       }
       if (!$ok1) throw new RuntimeException('更新 user_schedule 失败');
 
       // update profile
-      $stmtP = $pdo->prepare('UPDATE user_accounts SET profile=? WHERE user_id=?');
+      $stmtP = $pdo->prepare('UPDATE ' . table('user_accounts') . ' SET profile=? WHERE user_id=?');
       $ok2 = $stmtP->execute([json_encode($profile, JSON_UNESCAPED_UNICODE), $uid]);
       if (!$ok2) throw new RuntimeException('更新 user_accounts.profile 失败');
 

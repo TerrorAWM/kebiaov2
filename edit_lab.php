@@ -48,7 +48,7 @@ if (isset($_GET['api'])) {
     if (!preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'用户ID格式不正确']);
     if (!preg_match('/^\d{4}$/', $pin))  json_out(['ok'=>false,'error'=>'PIN格式不正确']);
     $pdo = db();
-    $stmt = $pdo->prepare('SELECT pin FROM user_accounts WHERE user_id=? LIMIT 1');
+    $stmt = $pdo->prepare('SELECT pin FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
     $stmt->execute([(int)$uid]);
     $row = $stmt->fetch();
     if (!$row || (string)$row['pin'] !== $pin) json_out(['ok'=>false,'error'=>'用户ID或PIN错误']);
@@ -74,7 +74,7 @@ if (isset($_GET['api'])) {
     $pdo = db();
 
     // 读取 lab schedule
-    $stmt2 = $pdo->prepare('SELECT data FROM user_lab_schedule WHERE user_id=? LIMIT 1');
+    $stmt2 = $pdo->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id=? LIMIT 1');
     $stmt2->execute([$uid]);
     $sch = $stmt2->fetch();
     $schedule = [
@@ -149,7 +149,7 @@ if (isset($_GET['api'])) {
     $pdo->beginTransaction();
     try {
       // update lab schedule
-      $stmtU = $pdo->prepare('INSERT INTO user_lab_schedule (user_id, data, updated_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=NOW()');
+      $stmtU = $pdo->prepare('INSERT INTO ' . table('user_lab_schedule') . ' (user_id, data, updated_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=NOW()');
       $ok1 = $stmtU->execute([$uid, json_encode($schedule, JSON_UNESCAPED_UNICODE)]);
       
       if (!$ok1) throw new RuntimeException('更新 user_lab_schedule 失败');
