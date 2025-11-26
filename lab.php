@@ -333,10 +333,10 @@ if ($logged) {
 
     $u = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
     $u->execute([$uid]); $upro = $u->fetch();
-    $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : [];
-
-    $s = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
-    $s->execute([$uid]); $sch = $s->fetch();
+    $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : []; // 2. 读取 schedule
+    $stmt2 = db()->prepare('SELECT data FROM user_lab_schedule WHERE user_id=? LIMIT 1');
+    $stmt2->execute([$uid]);
+    $sch = $stmt2->fetch();
     $schedule = $sch ? (json_decode($sch['data'] ?? '{}', true) ?: []) : [];
 
     // 时区策略
@@ -431,7 +431,7 @@ if ($logged) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>我的课表</title>
+<title>我的实验课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
 <link href="./assets/fontawesome-pp7.1.0/css/fontawesome.css" rel="stylesheet" />
@@ -854,31 +854,14 @@ if ($logged) {
 <?php endif; ?>
 </div>
 
-<!-- ======= 左侧：分享 & 实验课表 圆形按钮 ======= -->
+<!-- ======= 左侧：切换到主课表按钮 ======= -->
 <?php if ($logged): ?>
-  <?php if ($LOGIN_MODE === 'session'): ?>
-    <button class="fab fab-share" id="fabShare" title="分享课表">
-      <!-- share icon -->
-      <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a2.5 2.5 0 1 0 1.983 4.09l-7.518 4.01a2.5 2.5 0 1 0 0 1.8l7.518 4.01A2.5 2.5 0 1 0 13.5 15a2.48 2.48 0 0 0 1.37-.418l-7.52-4.01a2.5 2.5 0 0 0 0-1.145l7.52-4.01A2.48 2.48 0 0 0 13.5 1z"/></svg> -->
-      <i class="fa-solid fa-share"></i>
-        <!-- <i class="fa-solid fa-user"></i> -->
-
-    </button>
-    <div class="share-dropup shadow" id="shareDropup">
-      <div class="vstack gap-2">
-        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#shareCreateModal" onclick="hideShareDropup()">创建链接</button>
-        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareManageModal" onclick="hideShareDropup()">管理链接</button>
-      </div>
-    </div>
-  <?php endif; ?>
-  <a class="fab fab-lab text-decoration-none" href="lab.php" title="实验课表">
-    <!-- beaker icon -->
-    <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M6.5 1v2.5L2.126 10.02A2.5 2.5 0 0 0 4.25 14h7.5a2.5 2.5 0 0 0 2.124-3.98L9.5 3.5V1h-3zM8 4.118 12.874 12H3.126L8 4.118z"/></svg> -->
-    <!-- <i class="fa-solid fa-flask"></i> -->
-    <!-- <i class="fa-regular fa-flask"></i> -->
-    <i class="fa-sharp fa-solid fa-flask"></i>
-
-</a>
+  <!-- 切换到主课表 -->
+  <a class="fab fab-lab text-decoration-none" href="index.php" title="主课表" style="background:#0d6efd; color:#fff;">
+    <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+    </svg>
+  </a>
 <?php endif; ?>
 
 <!-- ======= 右侧：设置 圆形按钮（避让 #hit-fab） ======= -->
@@ -976,15 +959,6 @@ if ($logged) {
                 <input id="visitInput" type="number" class="form-control" style="max-width:140px" min="1" step="1" value="20" disabled>
               </div>
             </div>
-          </div>
-
-          <div class="col-12">
-            <label class="form-label">分享课表选择</label>
-            <div class="row g-2">
-              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_scope_main" checked><label class="form-check-label" for="sc_scope_main">主课表</label></div></div>
-              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_scope_lab"><label class="form-check-label" for="sc_scope_lab">实验课表</label></div></div>
-            </div>
-            <div class="form-text">可同时勾选，分享链接将包含所选课表</div>
           </div>
 
           <div class="col-12">
