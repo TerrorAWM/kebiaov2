@@ -1,0 +1,1733 @@
+<?php
+// index.php
+declare(strict_types=1);
+mb_internal_encoding('UTF-8');
+session_start();
+
+include_once __DIR__ . '/db.php';
+
+function db(): PDO {
+    static $pdo = null;
+    if ($pdo === null) {
+        $pdo = new PDO(DB_DSN, DB_USER, DB_PASS, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+    }
+    return $pdo;
+}
+
+/* =============== 常用工具函数 =============== */
+function json_out($arr, int $code = 200): void {
+    http_response_code($code);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($arr, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+function h($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+function time_in_range(string $hhmm, string $start, string $end): bool { return ($hhmm >= $start && $hhmm <= $end); }
+function base_url(): string {
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $dir = rtrim(str_replace('\\','/', dirname($_SERVER['SCRIPT_NAME'] ?? '')), '/');
+    return $scheme.'://'.$host.$dir;
+}
+
+/* —— 新增：链接登录（无记忆）支持 —— */
+function link_login_user(): ?int {
+    static $cached = null; // 0=无效，>0=uid
+    if ($cached !== null) return $cached === 0 ? null : $cached;
+
+    $sid  = $_GET['sid']  ?? null;
+    $pass = $_GET['pass'] ?? null;
+    if (!is_string($sid) || !preg_match('/^\d{4,6}$/', $sid))  { $cached = 0; return null; }
+    if (!is_string($pass) || !preg_match('/^\d{4}$/',  $pass)) { $cached = 0; return null; }
+
+    $stmt = db()->prepare('SELECT user_id, pin FROM user_accounts WHERE user_id = ? LIMIT 1');
+    $stmt->execute([$sid]); $row = $stmt->fetch();
+    if (!$row || (string)$row['pin'] !== $pass) { $cached = 0; return null; }
+
+    $cached = (int)$row['user_id'];
+    return $cached;
+}
+
+function auth_mode(): string {
+    if (isset($_SESSION['uid']) && is_numeric($_SESSION['uid'])) return 'session';
+    if (link_login_user() !== null) return 'link';
+    return 'guest';
+}
+
+function is_logged_in(): bool { return auth_mode() !== 'guest'; }
+
+function require_login(): int {
+    if (isset($_SESSION['uid']) && is_numeric($_SESSION['uid'])) return (int)$_SESSION['uid'];
+    $lid = link_login_user(); if ($lid !== null) return $lid;
+    header('Location: ?'); exit;
+}
+
+function parse_weeks_string(string $s): array {
+    $s = trim($s); if ($s === '') return [];
+    $parts = preg_split('/\s*,\s*/u', $s);
+    $weeks = [];
+    foreach ($parts as $p) {
+        if (preg_match('/^(\d{1,2})\s*-\s*(\d{1,2})$/', $p, $m)) {
+            $a = (int)$m[1]; $b = (int)$m[2]; if ($a > $b) { [$a,$b] = [$b,$a]; }
+            for ($i=$a; $i <= $b; $i++) $weeks[] = $i;
+        } elseif (preg_match('/^\d{1,2}$/', $p)) {
+            $weeks[] = (int)$p;
+        }
+    }
+    $weeks = array_values(array_unique($weeks)); sort($weeks); return $weeks;
+}
+
+function calc_week_no(DateTime $now, string $startDateYmd, string $tz): int {
+    $start = new DateTime($startDateYmd . ' 00:00:00', new DateTimeZone($tz));
+    $now2  = (clone $now)->setTimezone(new DateTimeZone($tz));
+    $diffDays = (int)$start->diff($now2)->format('%r%a'); if ($diffDays < 0) return 0; return (int)floor($diffDays / 7) + 1;
+}
+
+/* ========= 分享功能后端：工具函数 ========= */
+function share_require_owner(): int {
+    if (auth_mode() !== 'session') json_out(['ok'=>false,'error'=>'需要正常登录（非链接登录）以管理/创建分享链接'], 403);
+    return require_login();
+}
+function generate_token(): string {
+    for ($i=0; $i<6; $i++) {
+        $t = bin2hex(random_bytes(16));
+        $q = db()->prepare('SELECT 1 FROM shared_links WHERE token = ?');
+        $q->execute([$t]);
+        if (!$q->fetch()) return $t;
+    }
+    throw new RuntimeException('生成分享令牌失败，请重试');
+}
+function generate_share_pass(int $uid): string {
+    $stmt = db()->prepare('SELECT pin FROM user_accounts WHERE user_id = ?');
+    $stmt->execute([$uid]);
+    $mainPin = (string)($stmt->fetch()['pin'] ?? '');
+    do {
+        $pass = str_pad((string)random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+    } while ($pass === $mainPin);
+    return $pass;
+}
+/** 返回 null 表示无限制，否则返回正整数限制数 */
+function get_share_limit(?int $uid): ?int {
+    $limit = 5;
+    if (!$uid) return $limit;
+    $q = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
+    $q->execute([$uid]);
+    if ($row = $q->fetch()) {
+        $pro = json_decode($row['profile'] ?? '{}', true) ?: [];
+        $val = $pro['share_limit'] ?? null;
+        if ($val === 'nolimit') return null;
+        if (is_int($val) && $val > 0) $limit = $val;
+    }
+    return $limit;
+}
+
+/* ================== API 区 ================== */
+if (isset($_GET['api'])) {
+    $api = $_GET['api'];
+
+    if ($api === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $uid = $_POST['uid'] ?? ''; $pin = $_POST['pin'] ?? '';
+        if (!preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字'], 400);
+        if (!preg_match('/^\d{4}$/', $pin))  json_out(['ok'=>false,'error'=>'密码必须为 4 位数字'], 400);
+        $stmt = db()->prepare('SELECT user_id, pin, profile FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt->execute([$uid]); $row = $stmt->fetch();
+        if (!$row || $row['pin'] !== $pin) json_out(['ok'=>false,'error'=>'账号或密码错误'], 403);
+        $_SESSION['uid'] = (int)$row['user_id']; json_out(['ok'=>true]);
+    }
+
+    if ($api === 'logout') { session_destroy(); header('Location: ?'); exit; }
+
+    if ($api === 'set_client_tz' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (auth_mode() === 'link') json_out(['ok'=>false,'error'=>'链接登录模式下不可保存设置'], 403);
+        $uid = require_login(); $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $tz = $payload['tz'] ?? '';
+        if ($tz === '' || @new DateTimeZone($tz) === false) json_out(['ok'=>false,'error'=>'无效的时区'], 400);
+        $sql = "UPDATE user_accounts SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
+        db()->prepare($sql)->execute([$tz, $uid]); json_out(['ok'=>true]);
+    }
+
+    // 保存单元格显示字段设置
+    if ($api === 'set_cell_fields' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (auth_mode() === 'link') json_out(['ok'=>false,'error'=>'链接登录模式下不可保存显示字段设置'], 403);
+        $uid = require_login();
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $fields = $payload['fields'] ?? [];
+        $allow = ['name','teacher','room','weeks'];
+        $clean = [];
+        foreach ($fields as $f) if (in_array($f, $allow, true)) $clean[] = $f;
+        if (empty($clean)) $clean = ['name','teacher','room'];
+        $json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
+        $sql = "UPDATE user_accounts SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.cell_fields', CAST(? AS JSON)) WHERE user_id = ?";
+        db()->prepare($sql)->execute([$json, $uid]);
+        json_out(['ok'=>true]);
+    }
+
+    // 设置课程备注
+    if ($api === 'set_note' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        if (auth_mode() === 'link') json_out(['ok'=>false,'error'=>'链接登录模式下不可保存备注'], 403);
+        $uid = require_login();
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $idx  = isset($payload['idx']) ? (int)$payload['idx'] : -1;
+        $note = trim((string)($payload['note'] ?? ''));
+        if ($idx < 0) json_out(['ok'=>false,'error'=>'无效的课程索引'], 400);
+        if (mb_strlen($note) > 200) $note = mb_substr($note, 0, 200);
+        $path = '$.courses['.$idx.'].note';
+        $sql  = "UPDATE user_schedule SET data = JSON_SET(data, '$path', ?) WHERE user_id = ?";
+        db()->prepare($sql)->execute([$note, $uid]);
+        json_out(['ok'=>true]);
+    }
+
+    if ($api === 'me') {
+        $uid = require_login();
+        $u = db()->prepare('SELECT user_id, profile FROM user_accounts WHERE user_id = ?');
+        $u->execute([$uid]); $user = $u->fetch();
+        $s = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
+        $s->execute([$uid]); $sch = $s->fetch();
+        json_out(['ok'=>true, 'user'=>$user, 'schedule'=>$sch]);
+    }
+
+    /* ======= 新增：分享功能 API ======= */
+    if ($api === 'share_create' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $uid = share_require_owner();
+        // 限制检查
+        $limit = get_share_limit($uid); // null 表示无限制
+        if ($limit !== null) {
+            $c = db()->prepare('SELECT COUNT(*) AS n FROM shared_links WHERE user_id=? AND disabled=0');
+            $c->execute([$uid]); $n = (int)($c->fetch()['n'] ?? 0);
+            if ($n >= $limit) json_out(['ok'=>false,'error'=>"已达到分享上限（{$limit} 个）"], 400);
+        }
+
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+
+        $tz_mode  = $payload['tz_mode']  ?? 'client_dynamic';
+        $tz_value = $payload['tz_value'] ?? null;
+        if (!in_array($tz_mode, ['client_dynamic','client_fixed','custom'], true)) json_out(['ok'=>false,'error'=>'无效的时区模式'], 400);
+        if ($tz_mode === 'client_fixed') {
+            if (!$tz_value || @new DateTimeZone((string)$tz_value) === false) json_out(['ok'=>false,'error'=>'请提供有效的“本客户端时区”'], 400);
+        }
+        if ($tz_mode === 'custom') {
+            if (!$tz_value || @new DateTimeZone((string)$tz_value) === false) json_out(['ok'=>false,'error'=>'请提供有效的“自定义时区”'], 400);
+        }
+
+        $expires_type = $payload['expires']['type'] ?? 'none'; // none | days | date
+        $expires_at = null;
+        if ($expires_type === 'days') {
+            $days = (int)($payload['expires']['days'] ?? 0);
+            if ($days < 1 || $days > 180) json_out(['ok'=>false,'error'=>'有效期天数需在 1–180 之间'], 400);
+            $dt = new DateTime('now', new DateTimeZone('UTC'));
+            $dt->modify("+{$days} days");
+            $dt->setTime(23,59,59);
+            $expires_at = $dt->format('Y-m-d H:i:s');
+        } elseif ($expires_type === 'date') {
+            $date = trim((string)($payload['expires']['date'] ?? ''));
+            if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $date)) json_out(['ok'=>false,'error'=>'无效的日期（需 YYYY-MM-DD）'], 400);
+            $dt = DateTime::createFromFormat('Y-m-d H:i:s', $date.' 23:59:59', new DateTimeZone('UTC'));
+            if (!$dt) json_out(['ok'=>false,'error'=>'日期解析失败'], 400);
+            $expires_at = $dt->format('Y-m-d H:i:s');
+        }
+
+        $max_visits = $payload['max_visits'] ?? null; // null=无限制
+        if ($max_visits !== null) {
+            $max_visits = (int)$max_visits;
+            if ($max_visits < 1) json_out(['ok'=>false,'error'=>'最大访问次数需为正整数或选择“无限制”'], 400);
+        }
+
+        $fields = $payload['display_fields'] ?? ['name','teacher','room'];
+        $allow  = ['name','teacher','room','weeks'];
+        $clean  = [];
+        foreach ($fields as $f) if (in_array($f, $allow, true)) $clean[] = $f;
+        if (empty($clean)) $clean = ['name','teacher','room'];
+        $display_fields_json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
+
+        $token = generate_token();
+        $share_pass = generate_share_pass($uid);
+
+        $ins = db()->prepare('INSERT INTO shared_links(user_id, token, share_pass, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?)');
+        $ins->execute([$uid, $token, $share_pass, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
+
+        $url = base_url().'/share_kb.php?token='.rawurlencode($token).'&pass='.rawurlencode($share_pass);
+        json_out(['ok'=>true, 'url'=>$url, 'token'=>$token, 'pass'=>$share_pass]);
+    }
+
+    if ($api === 'share_list') {
+        $uid = share_require_owner();
+        $rows = db()->prepare('SELECT id, token, share_pass, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM shared_links WHERE user_id=? ORDER BY id DESC');
+        $rows->execute([$uid]);
+        $out = [];
+        while ($r = $rows->fetch()) {
+            $expired = false; $expires_label = '无限制';
+            if (!empty($r['expires_at'])) {
+                $expires_label = $r['expires_at'];
+                $expired = (strtotime($r['expires_at'].' UTC') < time());
+            }
+            $url = base_url().'/share_kb.php?token='.rawurlencode($r['token']).'&pass='.rawurlencode($r['share_pass']);
+            $out[] = [
+                'id' => (int)$r['id'],
+                'token' => $r['token'],
+                'pass' => $r['share_pass'],
+                'url' => $url,
+                'tz_mode' => $r['tz_mode'],
+                'tz_value'=> $r['tz_value'],
+                'max_visits' => ($r['max_visits'] === null ? null : (int)$r['max_visits']),
+                'visit_count'=> (int)$r['visit_count'],
+                'expires_at' => $r['expires_at'],
+                'expires_label' => $expires_label,
+                'expired' => $expired,
+                'disabled' => (int)$r['disabled'] === 1,
+                'created_at' => $r['created_at'],
+                'display_fields' => json_decode($r['display_fields'] ?? '[]', true) ?: [],
+            ];
+        }
+        $limit = get_share_limit($uid);
+        json_out(['ok'=>true, 'list'=>$out, 'limit'=>$limit]);
+    }
+
+    if ($api === 'share_delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $uid = share_require_owner();
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $id = (int)($payload['id'] ?? 0);
+        if ($id <= 0) json_out(['ok'=>false,'error'=>'无效的链接ID'], 400);
+        $chk = db()->prepare('SELECT id FROM shared_links WHERE id=? AND user_id=?');
+        $chk->execute([$id, $uid]);
+        if (!$chk->fetch()) json_out(['ok'=>false,'error'=>'记录不存在或无权操作'], 404);
+        db()->prepare('UPDATE shared_links SET disabled=1 WHERE id=?')->execute([$id]);
+        json_out(['ok'=>true]);
+    }
+
+    json_out(['ok'=>false,'error'=>'unknown api'], 404);
+}
+
+/* ================== 视图逻辑 ================== */
+$logged = is_logged_in();
+$LOGIN_MODE = auth_mode(); // 'session' | 'link' | 'guest'
+$LINK_QS = '';
+if ($LOGIN_MODE === 'link') {
+    $sid  = (string)($_GET['sid']  ?? '');
+    $pass = (string)($_GET['pass'] ?? '');
+    $LINK_QS = '&sid=' . rawurlencode($sid) . '&pass=' . rawurlencode($pass);
+}
+
+$profile = $schedule = [];
+$displayTz = 'UTC';
+$calcTz    = 'UTC';
+$enabledDays = [1,2,3,4,5,6,7];
+$timeslots = [];
+$courses   = [];
+$startDate = null;
+$showAllParam = isset($_GET['all']) ? (bool)$_GET['all'] : false;
+
+// 高亮集合（首屏渲染用；前端仍会实时更新）
+$currentHighlight = []; // [day=>[period=>true]]
+$nextHighlight    = []; // [day=>[period=>true]]
+$nowCourses = [];
+$upcomingWithin15 = [];
+$upcomingDeadline = null;
+$uid_out = 0;
+
+if ($logged) {
+    $uid = ($LOGIN_MODE === 'session') ? (int)$_SESSION['uid'] : (int)link_login_user();
+    $uid_out = $uid;
+
+    $u = db()->prepare('SELECT profile FROM user_accounts WHERE user_id = ?');
+    $u->execute([$uid]); $upro = $u->fetch();
+    $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : [];
+
+    $s = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
+    $s->execute([$uid]); $sch = $s->fetch();
+    $schedule = $sch ? (json_decode($sch['data'] ?? '{}', true) ?: []) : [];
+
+    // 时区策略
+    $tzPref = $profile['tz_pref'] ?? 'timetable';
+    $tzClient = $profile['tz_client'] ?? null; $tzCustom = $profile['tz_custom'] ?? null;
+    $tzTimetable = ($schedule['tz'] ?? ($profile['tz_timetable'] ?? 'Asia/Shanghai'));
+    if ($tzPref === 'client' && $tzClient) { $displayTz = $tzClient; $calcTz = $tzTimetable; }
+    elseif ($tzPref === 'custom' && $tzCustom) { $displayTz = $tzCustom; $calcTz = $tzTimetable; }
+    else { $displayTz = $tzTimetable; $calcTz = $tzTimetable; }
+
+    $enabledDays = $schedule['enabled_days'] ?? [1,2,3,4,5,6,7]; sort($enabledDays);
+    $timeslots = $schedule['timeslots'] ?? [];
+    $rawCourses = $schedule['courses'] ?? [];
+    $courses = [];
+    foreach ($rawCourses as $i=>$c) { $c['__idx'] = $i; $courses[] = $c; }
+
+    $startDate = $schedule['start_date'] ?? null;
+
+    $nowDisplay = new DateTime('now', new DateTimeZone($displayTz));
+    $nowCalc    = (clone $nowDisplay)->setTimezone(new DateTimeZone($calcTz));
+    $weekNo = $startDate ? calc_week_no($nowCalc, $startDate, $calcTz) : 0;
+    $weekdayCalc = (int)$nowCalc->format('N'); // 1..7
+    $nowHHMMCalc = $nowCalc->format('H:i');
+
+    // 当前节
+    $currentPeriods = [];
+    foreach ($timeslots as $slot) {
+        $st = $slot['start'] ?? '00:00'; $et = $slot['end'] ?? '00:00';
+        if (time_in_range($nowHHMMCalc, $st, $et)) $currentPeriods[] = (int)($slot['idx'] ?? 0);
+    }
+    foreach ($currentPeriods as $p) $currentHighlight[$weekdayCalc][$p] = true;
+
+    // 当前正在上课（按过滤）
+    if (!empty($currentPeriods)) {
+        foreach ($courses as $c) {
+            $cDay = (int)($c['day'] ?? 0); if ($cDay !== $weekdayCalc) continue;
+            $periods = array_map('intval', $c['periods'] ?? []);
+            if (!array_intersect($periods, $currentPeriods)) continue;
+            $weeksArr = parse_weeks_string((string)($c['weeks'] ?? ''));
+            $wtype = strtolower((string)($c['week_type'] ?? 'all'));
+            $okWeek = true;
+            if (!$showAllParam) {
+                $okWeek = in_array($weekNo, $weeksArr, true);
+                if ($okWeek && $wtype === 'odd' && $weekNo % 2 === 0) $okWeek = false;
+                if ($okWeek && $wtype === 'even' && $weekNo % 2 === 1) $okWeek = false;
+            }
+            if ($okWeek) $nowCourses[] = $c;
+        }
+    }
+
+    // 15 分钟内下一节
+    $earliestDiff = null; $nextPeriods = []; $nextStartHHMM = null;
+    foreach ($timeslots as $slot) {
+        $st = $slot['start'] ?? null; if (!$st) continue;
+        if ($st > $nowHHMMCalc) {
+            $stDT = DateTime::createFromFormat('Y-m-d H:i', $nowCalc->format('Y-m-d').' '.$st, new DateTimeZone($calcTz));
+            $diffMin = (int)floor(($stDT->getTimestamp() - $nowCalc->getTimestamp())/60);
+            if ($diffMin >= 0 && $diffMin <= 15) {
+                if ($earliestDiff === null || $diffMin < $earliestDiff) {
+                    $earliestDiff = $diffMin; $nextStartHHMM = $st; $nextPeriods = [(int)($slot['idx'] ?? 0)];
+                } elseif ($earliestDiff !== null && $diffMin === $earliestDiff) {
+                    $nextPeriods[] = (int)($slot['idx'] ?? 0);
+                }
+            }
+        }
+    }
+    if (!empty($nextPeriods)) $nextHighlight[$weekdayCalc] = array_fill_keys($nextPeriods, true);
+
+    if ($nextStartHHMM) {
+      $targetCalc = DateTime::createFromFormat('Y-m-d H:i', $nowCalc->format('Y-m-d').' '.$nextStartHHMM, new DateTimeZone($calcTz));
+      $targetDisplay = (clone $targetCalc)->setTimezone(new DateTimeZone($displayTz));
+      $upcomingDeadline = $targetDisplay->getTimestamp() * 1000; // ms
+      foreach ($courses as $c) {
+          if ((int)($c['day'] ?? 0) !== $weekdayCalc) continue;
+          $periods = array_map('intval', $c['periods'] ?? []);
+          if (!in_array((int)$nextPeriods[0], $periods, true)) continue;
+          $weeksArr = parse_weeks_string((string)($c['weeks'] ?? ''));
+          $wtype = strtolower((string)($c['week_type'] ?? 'all'));
+          $ok = true;
+          if (!$showAllParam) {
+              $ok = in_array($weekNo, $weeksArr, true);
+              if ($ok && $wtype === 'odd'  && $weekNo % 2 === 0) $ok = false;
+              if ($ok && $wtype === 'even' && $weekNo % 2 === 1) $ok = false;
+          }
+          if ($ok) $upcomingWithin15[] = $c;
+      }
+    }
+}
+?>
+<!doctype html>
+<html lang="zh-CN" data-bs-theme="auto">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>我的课表</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
+<link href="./assets/fontawesome-pp7.1.0/css/fontawesome.css" rel="stylesheet" />
+<link href="./assets/fontawesome-pp7.1.0/css/brands.css" rel="stylesheet" />
+<link href="./assets/fontawesome-pp7.1.0/css/solid.min.css" rel="stylesheet" />
+<link href="./assets/fontawesome-pp7.1.0/css/sharp-thin.css" rel="stylesheet" />
+<link href="./assets/fontawesome-pp7.1.0/css/sharp-duotone-thin.css" rel="stylesheet" />
+<link href="./assets/fontawesome-pp7.1.0/css/regular.css" rel="stylesheet" /> -->
+
+<!-- <script src="./assets/fontawesome/js/all.min.js"></script> -->
+<link rel="stylesheet" href="./assets/fontawesome/css/all.min.css">
+
+<style>
+  /* ======= 桌面优化：整体更紧凑、字体略小 ======= */
+  body { background: #f6f7fb; }
+  @media (min-width: 992px){
+    body{ font-size: .95rem; }
+    .card .card-body{ padding: .9rem 1rem; }
+    .table th, .table td{ padding:.3rem .35rem; }
+    .capsule{ font-size: .95rem; }
+    .capsule .cap-meta{ font-size: .78rem; }
+  }
+  a {
+    text-decoration: none;
+  }
+
+  .card { border-radius: 1rem; }
+  .sticky-col { position: sticky; left: 0; z-index: 2; background: #fff; white-space: nowrap; }
+  .sticky-col .fw-semibold{ white-space: nowrap; }
+  .slot-badge { font-size: .75rem; }
+  .cell { min-width: 140px; }
+  @media (max-width: 576px){ .cell{ min-width: 120px; } }
+  .now-pill { background: #ffffffff;}
+
+  thead.table-light th{text-align:center; white-space:nowrap; }
+
+  .cell .cell-content{
+    border-radius: .5rem;
+    padding: .25rem .4rem;
+    transition: border-color .2s, box-shadow .2s, background-color .2s;
+  }
+  .cell.cell-current .cell-content{ border: 2px solid #16a34a; }
+  .cell.cell-next    .cell-content{ border: 2px solid #f59e0b; }
+
+  .capsule{
+    display:inline-flex;
+    flex-direction:column;
+    align-items:flex-start;
+    gap:.15rem;
+    border:1px solid var(--cap-bd, #cbd5e1);
+    background: var(--cap-bg, #f8fafc);
+    border-radius:15px;
+    padding:.28rem .6rem .34rem .6rem;
+    line-height:1.25;
+    max-width:100%;
+  }
+  .capsule .cap-row{
+    display:inline-flex; align-items:center; gap:.4rem;
+    white-space:nowrap; max-width:100%;
+  }
+  .capsule .cap-dot{
+    width:.6rem; height:.6rem; border-radius:50%;
+    border:1px solid rgba(0,0,0,.06); flex:0 0 auto;
+    background: var(--cap-bd, #94a3b8);
+  }
+  .capsule .cap-text{ font-weight:600; overflow:hidden; text-overflow:ellipsis; display:inline-block; max-width:16ch; }
+  .capsule .cap-meta{ font-size:.78rem; opacity:.85; color:#475569; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  .cell .cell-item .title { font-weight: 600; }
+  .cell .cell-item .meta  { font-size: .8125rem; color: #6b7280; }
+  .cell-pager { display:flex; align-items:center; justify-content:center; gap:.5rem; margin-top:.25rem; }
+  .cell-pager .btn { padding: 0 .4rem; line-height: 1.2; }
+  .cell-pager .page-indicator { font-size:.75rem; color:#6b7280; }
+
+  /* ======= 新增：左右浮动圆形按钮 ======= */
+  .fab {
+    position: fixed; z-index: 1050; width: 56px; height: 56px; border-radius: 50%;
+    display: grid; place-items: center; box-shadow: 0 8px 18px rgba(0,0,0,.16);
+    background: #0d6efd; color: #fff; border: none; cursor: pointer;
+  }
+  .fab:focus { outline: none; }
+  .fab-share { left: 20px; bottom: 96px; background:#0ea5e9; }  /* 左侧靠上：分享 */
+  .fab-lab   { left: 20px; bottom: 24px; background:#005375; }  /* 左侧靠下：实验课表 */
+  .fab-settings { right: 20px; bottom: 24px; background:#6b7280; } /* 右侧设置 */
+  .fab .bi { font-size: 1.25rem; }
+
+  /* 分享按钮的“dropup” */
+  .share-dropup {
+    position: fixed; left: 20px; bottom: 156px; z-index: 1050; display: none;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: .75rem; padding: .5rem; box-shadow: 0 10px 24px rgba(0,0,0,.12);
+    min-width: 180px;
+  }
+  .share-dropup.show{ display:block; }
+  .share-dropup .btn { width:100%; text-align:left; }
+
+  /* 管理表格适配 */
+  #shareListTable td, #shareListTable th { white-space:nowrap; }
+  #shareCreateResult { background:#f8fafc; border:1px dashed #cbd5e1; border-radius:.5rem; padding:.5rem .75rem; }
+
+</style>
+<style>
+  /* ===== 齿轮 FAB 样式 ===== */
+  #kb-gear.kb-fab{
+    position: fixed;
+    right: 16px;
+    bottom: var(--kb-gear-bottom, 16px);
+    z-index: 2147483646; /* 高于一般悬浮层 */
+    pointer-events: auto;
+  }
+  #kb-gear .kb-fab-btn{
+    display: grid; place-items: center;
+    width: 48px; height: 48px; border-radius: 50%;
+    background: #6c6c6c; color: #fff; border: none;
+    box-shadow: 0 8px 20px rgba(55, 55, 55, 0.35);
+    transition: transform .2s ease, box-shadow .2s ease;
+  }
+  /* #kb-gear .kb-fab-btn:hover{ transform: translateY(-2px); box-shadow: 0 12px 26px rgba(54, 54, 54, 0.45); } */
+</style>
+</head>
+<body>
+<div class="container py-4">
+
+<?php if (!$logged): ?>
+  <!-- 登录卡片 -->
+  <div class="row justify-content-center">
+    <div class="col-12 col-md-6 col-lg-4">
+      <div class="card shadow-sm">
+        <div class="card-body">
+          <h5 class="card-title mb-3 text-center">登录查看课表</h5>
+          <form id="loginForm" class="vstack gap-3" onsubmit="return false;">
+            <div>
+              <label class="form-label">用户 ID</label>
+              <input class="form-control form-control-lg" name="uid" inputmode="numeric" pattern="\d{4,6}" required>
+            </div>
+            <div>
+              <label class="form-label">密码</label>
+              <input class="form-control form-control-lg" name="pin" inputmode="numeric" pattern="\d{4}" required>
+            </div>
+            <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">登录</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<?php else: ?>
+  <?php
+    $nowDisplay2 = new DateTime('now', new DateTimeZone($displayTz));
+    $weekNo = $startDate ? calc_week_no((clone $nowDisplay2)->setTimezone(new DateTimeZone($calcTz)), $startDate, $calcTz) : 0;
+
+    $weekdayNames = [1=>'星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
+    $headerDays   = array_values(array_intersect_key($weekdayNames, array_flip($enabledDays)));
+    $headerIdxs   = array_values($enabledDays);
+
+    $displayFields = $profile['cell_fields'] ?? ['name','teacher','room'];
+    $showName   = in_array('name', $displayFields, true);
+    $showTeacher= in_array('teacher', $displayFields, true);
+    $showRoom   = in_array('room', $displayFields, true);
+    $showWeeks  = in_array('weeks', $displayFields, true);
+  ?>
+
+  <!-- 顶部信息 -->
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div class="d-flex align-items-center gap-2">
+      <?php if ($startDate): ?><span class="badge text-bg-light border">开学日期：<?=h($startDate)?></span><?php endif; ?>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
+      <?php if ($LOGIN_MODE === 'session'): ?>
+        <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
+      <?php elseif ($LOGIN_MODE === 'link'): ?>
+        <span class="badge text-bg-warning">链接登录（无记忆）</span>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <!-- 日期时间 + 第几周 -->
+  <div class="text-center mb-3">
+    <h2 class="mb-1"><span id="nowTime" data-tz="<?=h($displayTz)?>"></span></h2>
+    <div class="text-muted">
+      <?php if ($startDate): ?>当前第 <b><?= (int)$weekNo ?></b> 周<?php else: ?><span class="text-warning">（尚未设置课表开始日期）</span><?php endif; ?>
+    </div>
+  </div>
+
+  <!-- 正在上课 / 即将开始 -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-body">
+      <div class="d-flex align-items-center justify-content-between">
+        <div class="pe-3 flex-grow-1">
+          <div class="fw-bold mb-1"></div>
+          <?php if (!empty($nowCourses)): ?>
+            <?php
+              $first = $nowCourses[0]; $extra = count($nowCourses) - 1;
+              $capDay = (int)($first['day'] ?? 0);
+              $firstPi = (int)(($first['periods'][0] ?? 1));
+              $capStart = $timeslots[$firstPi - 1]['start'] ?? '';
+              $teacherRoomTop = implode(' · ', array_filter([(string)($first['teacher'] ?? ''), (string)($first['room'] ?? '')], fn($x)=>$x!==''));
+            ?>
+            <div class="now-pill p-2 rounded d-flex align-items-center justify-content-between">
+              <div>
+                <span class="capsule" data-capsule
+                      data-day="<?= $capDay ?>"
+                      data-start="<?= h($capStart) ?>">
+                  <span class="cap-row">
+                    <i class="cap-dot"></i>
+                    <span class="cap-text"><?= h($first['name'] ?? '课程') ?></span>
+                  </span>
+                  <?php if ($teacherRoomTop !== ''): ?>
+                    <span class="cap-meta"><?= h($teacherRoomTop) ?></span>
+                  <?php endif; ?>
+                </span>
+                <?php if ($extra > 0): ?>
+                  <a href="#" class="ms-2" data-bs-toggle="modal" data-bs-target="#nowModal">+<?= $extra ?></a>
+                <?php endif; ?>
+              </div>
+              <?php if ($upcomingDeadline): ?>
+                <small class="text-muted ms-3">即将开始：<span id="nextCountdown" data-deadline="<?= (int)$upcomingDeadline ?>"></span></small>
+              <?php endif; ?>
+            </div>
+          <?php else: ?>
+            <div class="text-muted">当前无课程
+              <?php if ($upcomingDeadline): ?>
+                ，<span>即将开始：<span id="nextCountdown" data-deadline="<?= (int)$upcomingDeadline ?>"></span></span>
+                <?php if (count($upcomingWithin15)>0): $firstU=$upcomingWithin15[0]; $extraU=count($upcomingWithin15)-1; ?>
+                  <div class="mt-2">
+                    去 <b><?=h($firstU['room'] ?? '教室')?></b>
+                    <?php if ($extraU>0): ?>
+                      <a href="#" class="ms-2" data-bs-toggle="modal" data-bs-target="#upcomingModal">+<?= $extraU ?> 门</a>
+                    <?php endif; ?>
+                  </div>
+                <?php endif; ?>
+              <?php endif; ?>
+            </div>
+          <?php endif; ?>
+        </div>
+        <div>
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="toggleAll" <?= $showAllParam ? 'checked' : '' ?>
+                onchange="location.search = buildSearch(this.checked);">
+            <label class="form-check-label" for="toggleAll">显示全部课程</label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 课表 -->
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <div class="table-responsive">
+        <table class="table table-bordered align-middle table-sm">
+          <thead class="table-light">
+            <tr>
+              <th class="sticky-col">时间 / 节次</th>
+              <?php foreach ($headerDays as $dname): ?><th class="text-center"><?=h($dname)?></th><?php endforeach; ?>
+            </tr>
+          </thead>
+          <tbody>
+          <?php
+            // day -> period -> 课程列表（已按“仅本周/全部”过滤）
+            $grid = []; foreach ($headerIdxs as $didx) $grid[$didx] = [];
+            foreach ($courses as $c) {
+                $d = (int)($c['day'] ?? 0); if (!in_array($d, $headerIdxs, true)) continue;
+                $weeksArr = parse_weeks_string((string)($c['weeks'] ?? ''));
+                $wtype = strtolower((string)($c['week_type'] ?? 'all'));
+                $ok = true;
+                if (!$showAllParam && $startDate) {
+                    $ok = in_array($weekNo, $weeksArr, true);
+                    if ($ok && $wtype === 'odd'  && $weekNo % 2 === 0) $ok = false;
+                    if ($ok && $wtype === 'even' && $weekNo % 2 === 1) $ok = false;
+                }
+                if (!$ok) continue;
+                $periods = array_map('intval', $c['periods'] ?? []);
+                foreach ($periods as $pi) { $grid[$d][$pi] = $grid[$d][$pi] ?? []; $grid[$d][$pi][] = $c; }
+            }
+          ?>
+
+          <?php foreach ($timeslots as $slot): ?>
+            <?php $pi = (int)$slot['idx']; $label = sprintf('%s-%s', $slot['start'], $slot['end']); ?>
+            <tr>
+              <th class="sticky-col bg-white">
+                <div class="d-flex flex-column">
+                  <span class="fw-semibold"><?=h($label)?></span>
+                  <span class="text-muted small">第 <?= $pi ?> 节</span>
+                </div>
+              </th>
+              <?php foreach ($headerIdxs as $didx): ?>
+                <?php
+                  $list = $grid[$didx][$pi] ?? [];
+                  $cellCls = '';
+                  if (!empty($currentHighlight[$didx][$pi] ?? null)) $cellCls = 'cell-current';
+                  elseif (!empty($nextHighlight[$didx][$pi] ?? null)) $cellCls = 'cell-next';
+                  $dataCourses = !empty($list) ? h(json_encode($list, JSON_UNESCAPED_UNICODE)) : '';
+                ?>
+                <td
+                  class="cell <?= $cellCls ?>"
+                  data-day="<?= $didx ?>"
+                  data-period="<?= $pi ?>"
+                  data-start="<?= h($slot['start'] ?? '') ?>"
+                  <?= $dataCourses ? 'data-courses="'.$dataCourses.'"' : '' ?>
+                  data-page="0"
+                  onclick="openCellModal(this)"
+                  style="cursor:pointer;"
+                >
+                  <div class="cell-content">
+                    <?php if (empty($list)): ?>
+                      <span class="text-muted"></span>
+                    <?php else: ?>
+                      <div class="small text-muted">加载中…</div>
+                    <?php endif; ?>
+                  </div>
+                </td>
+              <?php endforeach; ?>
+            </tr>
+          <?php endforeach; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：当前时刻的其它课程 -->
+  <div class="modal fade" id="nowModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">当前时段其他课程</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body">
+          <?php if (!empty($nowCourses) && count($nowCourses) > 1): ?>
+            <div class="list-group">
+              <?php foreach (array_slice($nowCourses, 1) as $c): ?>
+                <?php
+                  $d = (int)($c['day'] ?? 0);
+                  $firstPi = (int)(($c['periods'][0] ?? 1));
+                  $st = $timeslots[$firstPi - 1]['start'] ?? '';
+                  $teacherRoom = implode(' · ', array_filter([(string)($c['teacher'] ?? ''), (string)($c['room'] ?? '')], fn($x)=>$x!==''));
+                ?>
+                <div class="list-group-item">
+                  <span class="capsule" data-capsule data-day="<?= $d ?>" data-start="<?= h($st) ?>">
+                    <span class="cap-row">
+                      <i class="cap-dot"></i>
+                      <span class="cap-text"><?=h($c['name'] ?? '')?></span>
+                    </span>
+                  </span>
+                  <?php if ($teacherRoom !== ''): ?>
+                    <div class="text-muted small mt-1"><?=h($teacherRoom)?></div>
+                  <?php endif; ?>
+                  <?php if (!empty($c['note'] ?? '')): ?><div class="small text-muted">备注：<?=h($c['note'])?></div><?php endif; ?>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php else: ?><div class="text-muted">暂无</div><?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：15 分钟内即将开始 -->
+  <div class="modal fade" id="upcomingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">即将开始（15 分钟内）</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body">
+          <?php if (!empty($upcomingWithin15)): ?>
+            <div class="list-group">
+              <?php foreach ($upcomingWithin15 as $c): ?>
+                <?php
+                  $d = (int)($c['day'] ?? 0);
+                  $firstPi = (int)(($c['periods'][0] ?? 1));
+                  $st = $timeslots[$firstPi - 1]['start'] ?? '';
+                  $teacherRoom = implode(' · ', array_filter([(string)($c['teacher'] ?? ''), '去 '.(string)($c['room'] ?? '')], fn($x)=>trim($x)!==''));
+                ?>
+                <div class="list-group-item">
+                  <span class="capsule" data-capsule data-day="<?= $d ?>" data-start="<?= h($st) ?>">
+                    <span class="cap-row">
+                      <i class="cap-dot"></i>
+                      <span class="cap-text"><?=h($c['name'] ?? '')?></span>
+                    </span>
+                  </span>
+                  <?php if ($teacherRoom !== ''): ?>
+                    <div class="text-muted small mt-1"><?=h($teacherRoom)?></div>
+                  <?php endif; ?>
+                  <?php if (!empty($c['note'] ?? '')): ?><div class="small text-muted">备注：<?=h($c['note'])?></div><?php endif; ?>
+                </div>
+              <?php endforeach; ?>
+            </div>
+          <?php else: ?><div class="text-muted">暂无</div><?php endif; ?>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：单元格课程列表 -->
+  <div class="modal fade" id="cellModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">该时段课程</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body" id="cellModalBody"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal：显示字段设置 -->
+  <div class="modal fade" id="fieldModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header"><h5 class="modal-title">课表单元格显示字段</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
+        <div class="modal-body">
+          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_name"   <?= $showName?'checked':'' ?>><label class="form-check-label" for="f_name">课程名</label></div>
+          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_teacher"<?= $showTeacher?'checked':'' ?>><label class="form-check-label" for="f_teacher">教师</label></div>
+          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_room"  <?= $showRoom?'checked':'' ?>><label class="form-check-label" for="f_room">教室</label></div>
+          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_weeks" <?= $showWeeks?'checked':'' ?>><label class="form-check-label" for="f_weeks">周数</label></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-primary" onclick="saveFields()">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<?php endif; ?>
+</div>
+
+<!-- ======= 左侧：分享 & 实验课表 圆形按钮 ======= -->
+<?php if ($logged): ?>
+  <?php if ($LOGIN_MODE === 'session'): ?>
+    <button class="fab fab-share" id="fabShare" title="分享课表">
+      <!-- share icon -->
+      <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a2.5 2.5 0 1 0 1.983 4.09l-7.518 4.01a2.5 2.5 0 1 0 0 1.8l7.518 4.01A2.5 2.5 0 1 0 13.5 15a2.48 2.48 0 0 0 1.37-.418l-7.52-4.01a2.5 2.5 0 0 0 0-1.145l7.52-4.01A2.48 2.48 0 0 0 13.5 1z"/></svg> -->
+      <i class="fa-solid fa-share"></i>
+        <!-- <i class="fa-solid fa-user"></i> -->
+
+    </button>
+    <div class="share-dropup shadow" id="shareDropup">
+      <div class="vstack gap-2">
+        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#shareCreateModal" onclick="hideShareDropup()">创建链接</button>
+        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareManageModal" onclick="hideShareDropup()">管理链接</button>
+      </div>
+    </div>
+  <?php endif; ?>
+  <a class="fab fab-lab text-decoration-none" href="lab.php" title="实验课表">
+    <!-- beaker icon -->
+    <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M6.5 1v2.5L2.126 10.02A2.5 2.5 0 0 0 4.25 14h7.5a2.5 2.5 0 0 0 2.124-3.98L9.5 3.5V1h-3zM8 4.118 12.874 12H3.126L8 4.118z"/></svg> -->
+    <!-- <i class="fa-solid fa-flask"></i> -->
+    <!-- <i class="fa-regular fa-flask"></i> -->
+    <i class="fa-sharp fa-solid fa-flask"></i>
+
+</a>
+<?php endif; ?>
+
+<!-- ======= 右侧：设置 圆形按钮（避让 #hit-fab） ======= -->
+<?php if ($logged): ?>
+  <div id="kb-gear" class="kb-fab" hidden>
+    <a href="edit.php" class="kb-fab-btn" aria-label="设置" title="设置">
+      <!-- <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.7"/>
+        <path d="M20 12a8.01 8.01 0 0 0-.12-1.37l1.87-1.45-1.8-3.12-2.25.75A8.06 8.06 0 0 0 15.37 4L14 2h-4l-1.37 2a8.06 8.06 0 0 0-2.33 1.81l-2.25-.75-1.8 3.12L3.12 10.63A8.01 8.01 0 0 0 3 12c0 .46.04.91.12 1.37l-1.87 1.45 1.8 3.12 2.25-.75c.67.72 1.47 1.33 2.33 1.81L10 22h4l1.37-2c.86-.48 1.66-1.09 2.33-1.81l2.25.75 1.8-3.12-1.87-1.45c.08-.46.12-.91.12-1.37Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      </svg> -->
+        <i class="fa-solid fa-gear"></i>
+    </a>
+  </div>
+<?php endif; ?>
+
+<!-- ======= Modal：创建分享链接 ======= -->
+<div class="modal fade" id="shareCreateModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">创建分享链接</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row g-3">
+          <div class="col-12">
+            <label class="form-label">时区设置</label>
+            <div class="vstack gap-2">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="share_tz_mode" id="tzModeDyn" value="client_dynamic" checked>
+                <label class="form-check-label" for="tzModeDyn">随客户端改变（访客使用自己的设备时区）</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="share_tz_mode" id="tzModeFixed" value="client_fixed">
+                <label class="form-check-label" for="tzModeFixed">本客户端时区（固定为当前设备的时区：<span id="currTzBadge" class="badge text-bg-light">检测中…</span>）</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="share_tz_mode" id="tzModeCustom" value="custom">
+                <label class="form-check-label" for="tzModeCustom">自定义时区</label>
+              </div>
+              <div id="tzCustomWrap" class="border rounded p-2 d-none">
+                <div class="row g-2 align-items-center">
+                  <div class="col-12 col-md-4">
+                    <label class="form-label mb-1">按大洲筛选</label>
+                    <select id="tzRegion" class="form-select">
+                      <option value="">（全部）</option>
+                      <option>Africa</option><option>America</option><option>Antarctica</option>
+                      <option>Asia</option><option>Atlantic</option><option>Australia</option>
+                      <option>Europe</option><option>Indian</option><option>Pacific</option><option>Etc</option>
+                    </select>
+                  </div>
+                  <div class="col-12 col-md-8">
+                    <label class="form-label mb-1">搜索（如：asia/shanghai）</label>
+                    <input id="tzSearch" class="form-control" placeholder="输入关键字过滤">
+                    <div class="mt-2">
+                      <select id="tzSelect" size="6" class="form-select" style="height: 160px;"></select>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-text">可输入 <code>america</code>、<code>asia</code> 进行筛选，再从列表中选择。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">分享最大访问日期</label>
+            <div class="vstack gap-2">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="share_exp" id="expNone" value="none" checked>
+                <label class="form-check-label" for="expNone">无限制</label>
+              </div>
+              <div class="form-check d-flex align-items-center gap-2">
+                <input class="form-check-input" type="radio" name="share_exp" id="expDays" value="days">
+                <label class="form-check-label" for="expDays">1–180 天</label>
+                <input id="expDaysInput" type="number" class="form-control" style="max-width:120px" min="1" max="180" value="30" disabled>
+              </div>
+              <div class="form-check d-flex align-items-center gap-2">
+                <input class="form-check-input" type="radio" name="share_exp" id="expDate" value="date">
+                <label class="form-check-label" for="expDate">选择日期</label>
+                <input id="expDateInput" type="date" class="form-control" style="max-width:220px" disabled>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">最大访问次数</label>
+            <div class="d-flex align-items-center gap-3">
+              <div class="form-check">
+                <input class="form-check-input" type="radio" name="share_visits" id="visitNone" value="none" checked>
+                <label class="form-check-label" for="visitNone">无限制</label>
+              </div>
+              <div class="form-check d-flex align-items-center gap-2">
+                <input class="form-check-input" type="radio" name="share_visits" id="visitCustom" value="custom">
+                <label class="form-check-label" for="visitCustom">自定义</label>
+                <input id="visitInput" type="number" class="form-control" style="max-width:140px" min="1" step="1" value="20" disabled>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <label class="form-label">显示设置</label>
+            <div class="row g-2">
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_name" checked><label class="form-check-label" for="sc_name">课名</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_teacher" checked><label class="form-check-label" for="sc_teacher">教师</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_room" checked><label class="form-check-label" for="sc_room">教室</label></div></div>
+              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_weeks"><label class="form-check-label" for="sc_weeks">周数</label></div></div>
+            </div>
+          </div>
+
+          <div class="col-12">
+            <div id="shareCreateResult" class="d-none">
+              <div class="d-flex align-items-center justify-content-between">
+                <div class="me-2"><div class="small text-muted">已创建链接：</div><a id="shareCreatedLink" href="#" target="_blank"></a></div>
+                <button class="btn btn-sm btn-outline-secondary" id="btnCopyShare">复制</button>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="me-auto small text-muted" id="shareLimitHint">正在读取分享配额…</div>
+        <button type="button" class="btn btn-primary" onclick="createShareLink()">创建</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ======= Modal：管理分享链接 ======= -->
+<div class="modal fade" id="shareManageModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-scrollable modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">管理链接</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+      </div>
+      <div class="modal-body">
+        <div class="table-responsive">
+          <table class="table table-sm align-middle" id="shareListTable">
+            <thead class="table-light">
+              <tr>
+                <th>#</th>
+                <th>邀请码</th>
+                <th>访问期限</th>
+                <th>最大访问次数</th>
+                <th>访问次数</th>
+                <th>链接</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="shareListBody"><tr><td colspan="7" class="text-center text-muted">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <div class="me-auto small text-muted" id="shareLimitHint2"></div>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+
+<script>
+/* ========= 链接登录前置变量 & 工具 ========= */
+const LINK_MODE = <?= $LOGIN_MODE === 'link' ? 'true' : 'false' ?>;
+const SID  = <?= json_encode($_GET['sid']  ?? null) ?>;
+const PASS = <?= json_encode($_GET['pass'] ?? null) ?>;
+const LINK_QS = LINK_MODE ? (`&sid=${encodeURIComponent(SID)}&pass=${encodeURIComponent(PASS)}`) : '';
+
+function buildApiUrl(name){ return `?api=${name}${LINK_QS}`; }
+function buildSearch(showAll){
+  const sp = new URLSearchParams(window.location.search);
+  if (showAll) sp.set('all','1'); else sp.delete('all');
+  if (LINK_MODE){ sp.set('sid', SID); sp.set('pass', PASS); }
+  return '?' + sp.toString();
+}
+
+/* ========= 其余前端逻辑 ========= */
+const USER_ID = <?= (int)$uid_out ?>; // 用于颜色种子
+const NAME_MAX = 5;
+
+function clampName(s, n=NAME_MAX){
+  if(!s) return '';
+  const arr = Array.from(s);
+  return arr.length > n ? arr.slice(0, n).join('') + '…' : s;
+}
+
+async function doLogin(){
+  const f = document.querySelector('#loginForm'); const fd = new FormData(f);
+  const r = await fetch(buildApiUrl('login'), {method:'POST', body:fd}); const j = await r.json();
+  if(!j.ok){ alert(j.error || '登录失败'); return; } location.reload();
+}
+
+// 登录后：自动上报客户端时区（链接登录下不保存）
+(async function reportTZ(){
+  <?php if ($logged): ?>
+  try{
+    if (LINK_MODE) return;
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if(tz){ await fetch(buildApiUrl('set_client_tz'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({tz})}); }
+  }catch(e){}
+  <?php endif; ?>
+})();
+
+function openCellModal(td){
+  const raw = td.getAttribute('data-courses'); if(!raw) return; let list = [];
+  try{ list = JSON.parse(raw); }catch(e){}
+  const day = parseInt(td.getAttribute('data-day')||'0',10);
+  const body = document.querySelector('#cellModalBody'); body.innerHTML='';
+  if(!list.length){ body.innerHTML = '<div class="text-muted">暂无</div>'; }
+  else {
+    const wrap = document.createElement('div'); wrap.className='list-group';
+    list.forEach(c=>{
+      const item = document.createElement('div'); item.className='list-group-item';
+
+      const periods = (c.periods||[]).map(x=>parseInt(x,10)).sort((a,b)=>a-b);
+      const startHHMM = periodStartFromList(periods) || td.getAttribute('data-start') || '';
+      const cap = buildCapsule(day, startHHMM, c.name||'', '', false);
+      item.appendChild(cap);
+
+      const teacherRoom = [c.teacher||'', c.room||''].filter(Boolean).join(' · ');
+      if (teacherRoom){
+        const meta = document.createElement('div'); meta.className='text-muted small mt-1'; meta.textContent = teacherRoom;
+        item.appendChild(meta);
+      }
+
+      if ((c.note||'')!==''){
+        const noteTxt = document.createElement('div'); noteTxt.className='small text-muted'; noteTxt.textContent='备注：'+c.note;
+        item.appendChild(noteTxt);
+      }
+      const noteWrap = document.createElement('div'); noteWrap.className='mt-2';
+      const ta = document.createElement('textarea'); ta.className='form-control'; ta.rows=2; ta.value = c.note || '';
+      const btn = document.createElement('button'); btn.className='btn btn-sm btn-primary mt-2'; btn.textContent='保存备注';
+      btn.onclick = async ()=>{ await saveNote(c.__idx, ta.value); };
+      noteWrap.appendChild(ta); noteWrap.appendChild(btn);
+      item.appendChild(noteWrap);
+
+      wrap.appendChild(item);
+    });
+    body.appendChild(wrap);
+  }
+  const modal = new bootstrap.Modal(document.getElementById('cellModal')); modal.show();
+}
+
+async function saveNote(idx, note){
+  try{
+    const r = await fetch(buildApiUrl('set_note'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({idx, note})});
+    const j = await r.json(); if(!j.ok) throw new Error(j.error||'保存失败');
+    alert('备注已保存');
+  }catch(e){ alert(e.message||'保存失败'); }
+}
+
+async function saveFields(){
+  const fields=[]; if(f_name.checked) fields.push('name'); if(f_teacher.checked) fields.push('teacher'); if(f_room.checked) fields.push('room'); if(f_weeks.checked) fields.push('weeks');
+  try{
+    const r = await fetch(buildApiUrl('set_cell_fields'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({fields})});
+    const j = await r.json(); if(!j.ok) throw new Error(j.error||'保存失败');
+    location.reload();
+  }catch(e){ alert(e.message||'保存失败'); }
+}
+
+// 倒计时
+(function initCountdown(){
+  const el = document.getElementById('nextCountdown'); if(!el) return;
+  const deadline = parseInt(el.getAttribute('data-deadline'),10); if(!deadline) return;
+  function tick(){
+    const now = Date.now(); let diff = Math.max(0, Math.floor((deadline - now)/1000));
+    const m = Math.floor(diff/60), s = diff%60; el.textContent = (m.toString().padStart(2,'0')+':'+s.toString().padStart(2,'0'));
+  }
+  tick(); setInterval(tick, 1000);
+})();
+
+/* ===== 顶部时间每30秒自动刷新 ===== */
+(function initClock(){
+  const el = document.getElementById('nowTime'); if(!el) return;
+  const tz = el.getAttribute('data-tz') || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  function fmtNow(){
+    const now = new Date();
+    const fmt = new Intl.DateTimeFormat('zh-CN', {
+      timeZone: tz, hour12:false,
+      year:'numeric', month:'2-digit', day:'2-digit',
+      hour:'2-digit', minute:'2-digit'
+    }).formatToParts(now);
+    const parts = Object.fromEntries(fmt.map(p=>[p.type,p.value]));
+    el.textContent = `${parts.year}年${parts.month}月${parts.day}日 ${parts.hour}:${parts.minute}`;
+  }
+  fmtNow();
+  setInterval(fmtNow, 30_000);
+})();
+
+/* ======= period idx -> startHHMM ======= */
+const TIMESLOTS = <?= json_encode(array_values($timeslots), JSON_UNESCAPED_UNICODE) ?>;
+const PERIOD_START = {};
+for (const s of TIMESLOTS){ if (s && s.idx!=null && s.start) PERIOD_START[parseInt(s.idx,10)] = String(s.start); }
+function periodStartFromList(periods){
+  const arr = (periods||[]).map(p=>PERIOD_START[p]).filter(Boolean).sort();
+  return arr.length ? arr[0] : '';
+}
+
+/* ===== 单元格内分页 ===== */
+const DISPLAY_FIELDS = {
+  name: <?= $showName?'true':'false' ?>,
+  teacher: <?= $showTeacher?'true':'false' ?>,
+  room: <?= $showRoom?'true':'false' ?>,
+  weeks: <?= $showWeeks?'true':'false' ?>
+};
+
+function buildCapsule(day, startHHMM, text, metaText, withMeta){
+  const seed = `${USER_ID}|${day}|${startHHMM||''}`;
+  const color = colorFromSeed(seed);
+  const span = document.createElement('span');
+  span.className='capsule';
+  span.style.setProperty('--cap-bg', color.bg);
+  span.style.setProperty('--cap-bd', color.bd);
+  const row = document.createElement('span'); row.className='cap-row';
+  const dot = document.createElement('i');   dot.className='cap-dot';
+  const t   = document.createElement('span'); t.className='cap-text'; t.textContent = clampName(text || '');
+  row.appendChild(dot); row.appendChild(t);
+  span.appendChild(row);
+  if (withMeta && metaText){
+    const m = document.createElement('span'); m.className='cap-meta'; m.textContent = metaText;
+    span.appendChild(m);
+  }
+  return span;
+}
+
+function buildCellItem(c, day){
+  const wrap = document.createElement('div'); wrap.className='cell-item vstack gap-1';
+  const periods = (c.periods||[]).map(x=>parseInt(x,10)).sort((a,b)=>a-b);
+  const startHHMM = periodStartFromList(periods);
+  const teacherRoom = [c.teacher||'', c.room||''].filter(Boolean).join(' · ');
+  const cap = buildCapsule(day, startHHMM, c.name||'', teacherRoom, /*withMeta=*/true);
+  wrap.appendChild(cap);
+
+  if (DISPLAY_FIELDS.weeks && c.weeks){
+    const metaWeeks = document.createElement('div'); metaWeeks.className='meta text-truncate';
+    metaWeeks.textContent = '周: ' + String(c.weeks);
+    wrap.appendChild(metaWeeks);
+  }
+  return wrap;
+}
+
+function renderCell(td){
+  const holder = td.querySelector('.cell-content') || td;
+  const raw = td.getAttribute('data-courses'); if(!raw){ holder.innerHTML = '<span class="text-muted"></span>'; return; }
+  let list = []; try{ list = JSON.parse(raw); }catch(e){}
+  const per = 2;
+  const totalPages = Math.max(1, Math.ceil(list.length / per));
+  let page = parseInt(td.getAttribute('data-page')||'0', 10);
+  if (isNaN(page)) page = 0;
+  page = Math.max(0, Math.min(page, totalPages-1));
+  td.setAttribute('data-page', String(page));
+
+  const start = page * per;
+  const items = list.slice(start, start + per);
+  const day = parseInt(td.getAttribute('data-day')||'0',10);
+
+  const box = document.createElement('div'); box.className = 'vstack gap-2';
+  if (!items.length){
+    box.innerHTML = '<span class="text-muted"></span>';
+  } else {
+    items.forEach(c=> box.appendChild(buildCellItem(c, day)));
+  }
+
+  if (list.length > per){
+    const pager = document.createElement('div'); pager.className='cell-pager';
+    const prev = document.createElement('button'); prev.type='button'; prev.className='btn btn-sm btn-outline-secondary'; prev.textContent='‹';
+    const next = document.createElement('button'); next.type='button'; next.className='btn btn-sm btn-outline-secondary'; next.textContent='›';
+    const indi = document.createElement('span'); indi.className='page-indicator'; indi.textContent = (page+1) + '/' + totalPages;
+
+    prev.onclick = (ev)=>{ ev.stopPropagation(); changeCellPage(td, -1); };
+    next.onclick = (ev)=>{ ev.stopPropagation(); changeCellPage(td, +1); };
+
+    pager.appendChild(prev); pager.appendChild(indi); pager.appendChild(next);
+    box.appendChild(pager);
+  }
+
+  holder.innerHTML = '';
+  holder.appendChild(box);
+}
+
+function changeCellPage(td, dir){
+  const total = (()=>{ const raw = td.getAttribute('data-courses'); if(!raw) return 1; let l=[]; try{l=JSON.parse(raw);}catch(e){} return Math.max(1, Math.ceil(l.length/2)); })();
+  let p = parseInt(td.getAttribute('data-page')||'0', 10);
+  if (isNaN(p)) p = 0;
+  p += dir;
+  if (p < 0) p = total - 1;
+  if (p >= total) p = 0;
+  td.setAttribute('data-page', String(p));
+  renderCell(td);
+}
+
+(function initCells(){
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  document.querySelectorAll('[data-capsule]').forEach(el=>{
+    const day = parseInt(el.getAttribute('data-day')||'0',10);
+    const st  = el.getAttribute('data-start') || '';
+    const color = colorFromSeed(`${USER_ID}|${day}|${st}`);
+    el.style.setProperty('--cap-bg', color.bg);
+    el.style.setProperty('--cap-bd', color.bd);
+    const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
+  });
+})();
+
+/* ===== 实时高亮：当前（绿） + 下一节（黄）；跨天回滚 ===== */
+const CALC_TZ  = "<?=h($calcTz)?>";
+const DAYS     = <?= json_encode(array_values($enabledDays), JSON_UNESCAPED_UNICODE) ?>;
+
+function nowInTZ(tz){
+  const f = new Intl.DateTimeFormat('en-GB', {
+    timeZone: tz, hour12:false,
+    year:'numeric', month:'2-digit', day:'2-digit',
+    hour:'2-digit', minute:'2-digit', weekday:'short'
+  });
+  const parts = Object.fromEntries(f.formatToParts(new Date()).map(p=>[p.type,p.value]));
+  const map = {Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6, Sun:7};
+  return { hhmm: `${parts.hour}:${parts.minute}`, day: map[parts.weekday]||1 };
+}
+function getCell(day, period){ return document.querySelector(`td.cell[data-day="${day}"][data-period="${period}"]`); }
+function cellHasCourse(cell){
+  if(!cell) return false;
+  const raw = cell.getAttribute('data-courses');
+  if(!raw) return false;
+  try{ const list = JSON.parse(raw); return Array.isArray(list) && list.length>0; }catch(e){ return false; }
+}
+function sortSlots(slots){
+  return [...slots].sort((a,b)=>{
+    if (a.start === b.start) return (a.idx||0)-(b.idx||0);
+    return a.start > b.start ? 1 : -1;
+  });
+}
+function clearHL(){
+  document.querySelectorAll('td.cell.cell-current, td.cell.cell-next').forEach(td=>{
+    td.classList.remove('cell-current','cell-next');
+  });
+}
+function markCurrent(day, hhmm, slots){
+  const curr = slots.filter(s => hhmm >= s.start && hhmm <= s.end).map(s => s.idx);
+  curr.forEach(p=>{
+    const td = getCell(day, p);
+    if (cellHasCourse(td)) td.classList.add('cell-current');
+  });
+}
+function findNext(dayToday, hhmm, slots){
+  const todayIdx = Math.max(0, DAYS.indexOf(dayToday));
+  for (let offset=0; offset < DAYS.length; offset++){
+    const day = DAYS[(todayIdx + offset) % DAYS.length];
+    const slotList = (offset === 0) ? slots.filter(s => s.start > hhmm) : slots;
+    for (const s of slotList){
+      const td = getCell(day, s.idx);
+      if (cellHasCourse(td)) return { day, period: s.idx };
+    }
+  }
+  return null;
+}
+(function liveHighlight(){
+  const slots = sortSlots(TIMESLOTS);
+  function tick(){
+    clearHL();
+    const {hhmm, day} = nowInTZ(CALC_TZ);
+    markCurrent(day, hhmm, slots);
+    const nxt = findNext(day, hhmm, slots);
+    if (nxt){
+      const td = getCell(nxt.day, nxt.period);
+      if (td) td.classList.add('cell-next');
+    }
+  }
+  tick();
+  setInterval(tick, 30 * 1000);
+})();
+
+/* ======= 稳定配色算法 ======= */
+function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h) + str.charCodeAt(i); h|=0; } return h>>>0; }
+function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
+function colorFromSeed(seed){
+  const hv = djb2(String(seed)); const h = hv % 360;
+  const sBg=70, lBg=92, sBd=65, lBd=55;
+  return { bg: hsl(h, sBg, lBg), bd: hsl(h, sBd, lBd) };
+}
+
+/* ======= 新增：分享 UI 逻辑 ======= */
+(function initShareUI(){
+  const currTz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const currBadge = document.getElementById('currTzBadge'); if (currBadge) currBadge.textContent = currTz;
+
+  const tzModeDyn   = document.getElementById('tzModeDyn');
+  const tzModeFixed = document.getElementById('tzModeFixed');
+  const tzModeCustom= document.getElementById('tzModeCustom');
+  const tzCustomWrap= document.getElementById('tzCustomWrap');
+  function syncTzUI(){
+    tzCustomWrap.classList.toggle('d-none', !tzModeCustom.checked);
+  }
+  [tzModeDyn, tzModeFixed, tzModeCustom].forEach(r=> r && r.addEventListener('change', syncTzUI));
+  syncTzUI();
+
+  const expNone = document.getElementById('expNone');
+  const expDays = document.getElementById('expDays');
+  const expDate = document.getElementById('expDate');
+  const expDaysInput = document.getElementById('expDaysInput');
+  const expDateInput = document.getElementById('expDateInput');
+  function syncExpUI(){
+    expDaysInput.disabled = !expDays.checked;
+    expDateInput.disabled = !expDate.checked;
+  }
+  [expNone, expDays, expDate].forEach(r=> r && r.addEventListener('change', syncExpUI));
+  syncExpUI();
+
+  const visitNone = document.getElementById('visitNone');
+  const visitCustom = document.getElementById('visitCustom');
+  const visitInput = document.getElementById('visitInput');
+  function syncVisitUI(){ visitInput.disabled = !visitCustom.checked; }
+  [visitNone, visitCustom].forEach(r=> r && r.addEventListener('change', syncVisitUI));
+  syncVisitUI();
+
+  // TZ 列表
+  const tzSelect = document.getElementById('tzSelect');
+  const tzRegion = document.getElementById('tzRegion');
+  const tzSearch = document.getElementById('tzSearch');
+  let tzAll = [];
+  try{
+    if (Intl.supportedValuesOf){
+      tzAll = Intl.supportedValuesOf('timeZone') || [];
+    }
+  }catch(e){}
+  if (!tzAll || !tzAll.length){
+    tzAll = [
+      'UTC','Asia/Shanghai','Asia/Tokyo','Asia/Harbin','America/New_York','America/Los_Angeles','Europe/Berlin','Europe/London','Australia/Sydney','Asia/Hong_Kong','Asia/Singapore','Asia/Seoul','America/Panama'
+    ];
+  }
+  function refreshTZ(){
+    const reg = (tzRegion.value||'').trim().toLowerCase();
+    const kw  = (tzSearch.value||'').trim().toLowerCase();
+    const list = tzAll.filter(z=>{
+      if (reg && !z.toLowerCase().startsWith(reg+'/') && z.toLowerCase()!==reg) return false;
+      if (kw && !z.toLowerCase().includes(kw)) return false;
+      return true;
+    }).slice(0, 400);
+    tzSelect.innerHTML = '';
+    list.forEach(z=>{
+      const opt = document.createElement('option'); opt.value=z; opt.textContent=z; tzSelect.appendChild(opt);
+    });
+  }
+  tzRegion && tzRegion.addEventListener('change', refreshTZ);
+  tzSearch && tzSearch.addEventListener('input', refreshTZ);
+  refreshTZ();
+
+  // 左侧分享 dropup
+  const fabShare = document.getElementById('fabShare');
+  const shareDrop = document.getElementById('shareDropup');
+  if (fabShare && shareDrop){
+    fabShare.addEventListener('click', ()=>{
+      shareDrop.classList.toggle('show');
+    });
+    document.addEventListener('click', (e)=>{
+      if (e.target.closest('#fabShare') || e.target.closest('#shareDropup')) return;
+      shareDrop.classList.remove('show');
+    });
+  }
+})();
+function hideShareDropup(){ const s=document.getElementById('shareDropup'); if(s) s.classList.remove('show'); }
+
+// 读取配额提示 & 管理列表
+async function loadShareListHints(targetHintId){
+  try{
+    const r = await fetch(buildApiUrl('share_list'));
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error||'');
+    const limit = j.limit; const used = (j.list||[]).filter(x=>!x.disabled).length;
+    const hintEl = document.getElementById(targetHintId);
+    if (hintEl){
+      if (limit === null) hintEl.textContent = `已创建 ${used} 个，配额：无限制`;
+      else hintEl.textContent = `已创建 ${used}/${limit} 个`;
+    }
+    return j;
+  }catch(e){
+    const hintEl = document.getElementById(targetHintId);
+    if (hintEl) hintEl.textContent = '配额读取失败';
+    return { ok:false, list:[], limit:0 };
+  }
+}
+async function refreshShareListTable(){
+  const body = document.getElementById('shareListBody'); if (!body) return;
+  body.innerHTML = '<tr><td colspan="7" class="text-center text-muted">加载中…</td></tr>';
+  const j = await loadShareListHints('shareLimitHint2');
+  if (!j.ok){ body.innerHTML = '<tr><td colspan="7" class="text-center text-danger">加载失败</td></tr>'; return; }
+  const list = j.list || [];
+  if (!list.length){ body.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无分享链接</td></tr>'; return; }
+  body.innerHTML = '';
+  list.forEach((it, idx)=>{
+    if (it.disabled) return;
+    const tr = document.createElement('tr');
+    const exp = it.expires_label || '—';
+    const maxv = it.max_visits==null ? '无限制' : it.max_visits;
+    tr.innerHTML = `
+      <td>${idx+1}</td>
+      <td><code>${it.pass}</code></td>
+      <td>${exp}</td>
+      <td>${maxv}</td>
+      <td>${it.visit_count}</td>
+      <td class="text-truncate" style="max-width:380px;"><a href="${it.url}" target="_blank">${it.url}</a></td>
+      <td class="d-flex gap-2">
+        <button class="btn btn-sm btn-outline-secondary" data-url="${it.url}">复制</button>
+        <button class="btn btn-sm btn-outline-danger" data-id="${it.id}">删除</button>
+      </td>
+    `;
+    tr.querySelector('button.btn-outline-secondary').addEventListener('click', ev=>{
+      const url = ev.currentTarget.getAttribute('data-url'); navigator.clipboard.writeText(url).then(()=>{ ev.currentTarget.textContent='已复制'; setTimeout(()=>ev.currentTarget.textContent='复制',1200); });
+    });
+    tr.querySelector('button.btn-outline-danger').addEventListener('click', async ev=>{
+      const id = parseInt(ev.currentTarget.getAttribute('data-id'),10);
+      if (!confirm('确定删除该分享链接？')) return;
+      const r = await fetch(buildApiUrl('share_delete'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id})});
+      const j2 = await r.json();
+      if (!j2.ok) { alert(j2.error||'删除失败'); return; }
+      refreshShareListTable();
+    });
+    body.appendChild(tr);
+  });
+}
+document.getElementById('shareCreateModal')?.addEventListener('show.bs.modal', async ()=>{
+  await loadShareListHints('shareLimitHint');
+  // 预置 sc_* 与当前显示字段一致（若需要可进一步读取 /me）
+});
+document.getElementById('shareManageModal')?.addEventListener('show.bs.modal', refreshShareListTable);
+
+async function createShareLink(){
+  // tz
+  const tzMode = document.querySelector('input[name="share_tz_mode"]:checked')?.value || 'client_dynamic';
+  let tz_value = null;
+  if (tzMode === 'client_fixed') tz_value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  if (tzMode === 'custom'){
+    const sel = document.getElementById('tzSelect');
+    tz_value = sel && sel.value ? sel.value : null;
+    if (!tz_value){ alert('请选择一个自定义时区'); return; }
+  }
+
+  // expires
+  const expType = document.querySelector('input[name="share_exp"]:checked')?.value || 'none';
+  const exp = { type: expType };
+  if (expType === 'days'){
+    const d = parseInt(document.getElementById('expDaysInput').value||'0',10);
+    if (!(d>=1 && d<=180)){ alert('有效期天数需在 1–180 之间'); return; }
+    exp.days = d;
+  } else if (expType === 'date'){
+    const v = document.getElementById('expDateInput').value;
+    if (!v){ alert('请选择日期'); return; }
+    exp.date = v;
+  }
+
+  // visits
+  const visitsMode = document.querySelector('input[name="share_visits"]:checked')?.value || 'none';
+  let max_visits = null;
+  if (visitsMode === 'custom'){
+    const n = parseInt(document.getElementById('visitInput').value||'0',10);
+    if (!(n>0)){ alert('最大访问次数需为正整数'); return; }
+    max_visits = n;
+  }
+
+  // display fields
+  const df = [];
+  if (document.getElementById('sc_name').checked) df.push('name');
+  if (document.getElementById('sc_teacher').checked) df.push('teacher');
+  if (document.getElementById('sc_room').checked) df.push('room');
+  if (document.getElementById('sc_weeks').checked) df.push('weeks');
+
+  try{
+    const r = await fetch(buildApiUrl('share_create'), {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df })
+    });
+    const j = await r.json();
+    if (!j.ok) { alert(j.error||'创建失败'); return; }
+    const box = document.getElementById('shareCreateResult'); const a = document.getElementById('shareCreatedLink');
+    a.href = j.url; a.textContent = j.url; box.classList.remove('d-none');
+    const copyBtn = document.getElementById('btnCopyShare');
+    copyBtn.onclick = ()=>{ navigator.clipboard.writeText(j.url).then(()=>{ copyBtn.textContent='已复制'; setTimeout(()=>copyBtn.textContent='复制',1200); }); };
+    // 刷新配额
+    await loadShareListHints('shareLimitHint');
+  }catch(e){
+    alert('创建失败，请重试');
+  }
+}
+
+/* ======= 新增：右侧设置按钮避让 #hit-fab ======= */
+(function fabAvoidHit(){
+  const fab = document.getElementById('fabSettings'); if (!fab) return;
+  const BASE_BOTTOM = 24; // px
+  function adjust(){
+    const hf = document.getElementById('hit-fab');
+    if (!hf){ fab.style.bottom = BASE_BOTTOM+'px'; return; }
+    const r1 = fab.getBoundingClientRect();
+    const r2 = hf.getBoundingClientRect();
+    // 是否重叠或过近（阈值 12px）
+    const overlap = !(r1.right < r2.left || r1.left > r2.right || r1.bottom+12 < r2.top || r1.top-12 > r2.bottom);
+    if (overlap){
+      const delta = Math.ceil((r1.bottom - r2.top) + 16); // 16px 额外间距
+      const cur = parseInt(window.getComputedStyle(fab).bottom,10) || BASE_BOTTOM;
+      fab.style.bottom = Math.max(BASE_BOTTOM, cur + delta) + 'px';
+    } else {
+      fab.style.bottom = BASE_BOTTOM+'px';
+    }
+  }
+  // 初始 + 轮询
+  adjust(); const timer = setInterval(adjust, 800);
+  // 监听 DOM 变更
+  const obs = new MutationObserver(adjust);
+  obs.observe(document.body, { childList:true, subtree:true });
+  // 窗口变化
+  window.addEventListener('resize', adjust);
+})();
+
+</script>
+<script>
+/* ===== 齿轮 FAB 与 #hit-fab 防冲突定位（稳定，无“横跳”） ===== */
+(() => {
+  const gear = document.getElementById('kb-gear');
+  if (!gear) return;
+
+  // 页面渲染后再显示，避免初次测量为 0
+  requestAnimationFrame(() => { gear.hidden = false; });
+
+  // 常量与状态
+  const BASE = 16;          // 默认 bottom(px)
+  const RIGHT = 16;         // 右侧边距(px)
+  const GUTTER = 12;        // 避开 #hit-fab 的额外间距(px)
+  const ENTER_MS = 120;     // 进入“上移”所需稳定时间（防抖）
+  const EXIT_MS  = 600;     // 退出“上移”所需稳定时间（迟滞）
+  const THRESH   = 6;       // 像素阈值，防止小抖动触发
+
+  let gearW = 0, gearH = 0;
+  let rafId = null;
+  let stateBumped = false;  // 是否处于“为避让而上移”状态
+  let enterAt = 0, exitAt = 0;
+
+  function measureGear(){
+    const r = gear.getBoundingClientRect();
+    gearW = Math.round(r.width || 52);
+    gearH = Math.round(r.height || 52);
+  }
+  function getHitFabRect(){
+    const fab = document.getElementById('hit-fab');
+    if (!fab) return null;
+    const cs = getComputedStyle(fab);
+    if (cs.display === 'none' || cs.visibility === 'hidden') return null;
+    const rect = fab.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    return rect;
+  }
+  function overlapIf(bottomCandidate){
+    // 预测在 bottomCandidate 时，齿轮与 #hit-fab 是否相交（带 THRESH 缓冲）
+    const fab = getHitFabRect();
+    if (!fab) return false;
+    const gearTop = window.innerHeight - bottomCandidate - gearH;
+    const gearLeft = window.innerWidth - RIGHT - gearW;
+    const horiz = (gearLeft + gearW) > (fab.left - THRESH) && gearLeft < (fab.right + THRESH);
+    const vert  = (gearTop  + gearH) > (fab.top  - THRESH) && gearTop  < (fab.bottom + THRESH);
+    return horiz && vert;
+  }
+  function desiredBottom(){
+    // 将齿轮放到 #hit-fab 上方 GUTTER 位置
+    const fab = getHitFabRect();
+    if (!fab) return BASE;
+    const distanceFromBottom = Math.max(0, window.innerHeight - fab.top);
+    return distanceFromBottom + GUTTER;
+  }
+  function getAppliedBottom(){
+    const v = getComputedStyle(gear).getPropertyValue('--kb-gear-bottom').trim();
+    return v.endsWith('px') ? parseFloat(v) : BASE;
+  }
+  function applyBottom(px){
+    const now = Math.round(px);
+    const cur = Math.round(getAppliedBottom());
+    if (Math.abs(now - cur) > THRESH) {
+      gear.style.setProperty('--kb-gear-bottom', now + 'px');
+    }
+  }
+
+  function update(){
+    measureGear();
+
+    const want = desiredBottom();
+    const baseOverlaps = overlapIf(BASE);
+
+    if (!stateBumped) {
+      // 还没上移：只有“稳定重叠”才上移
+      if (baseOverlaps) {
+        if (!enterAt) enterAt = performance.now();
+        if (performance.now() - enterAt >= ENTER_MS) {
+          stateBumped = true;
+          applyBottom(want);
+          exitAt = 0;
+        }
+      } else {
+        enterAt = 0;
+        applyBottom(BASE);
+      }
+    } else {
+      // 已上移：只在“稳定不重叠”时恢复
+      if (!baseOverlaps) {
+        if (!exitAt) exitAt = performance.now();
+        if (performance.now() - exitAt >= EXIT_MS) {
+          stateBumped = false;
+          applyBottom(BASE);
+          enterAt = 0;
+        }
+      } else {
+        exitAt = 0;
+        // 面板展开/收起高度变化时，跟随但不抖动
+        applyBottom(want);
+      }
+    }
+  }
+  function schedule(){
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => { rafId = null; update(); });
+  }
+
+  // 监听：窗口变化 / 滚动（有些 FAB 会随滚动偏移）/ DOM 注入 / 面板尺寸变化
+  window.addEventListener('resize', schedule);
+  window.addEventListener('scroll', schedule, { passive: true });
+
+  const mo = new MutationObserver(() => schedule());
+  mo.observe(document.body, {
+    subtree: true, childList: true, attributes: true,
+    attributeFilter: ['style','class','hidden','open']
+  });
+
+  if ('ResizeObserver' in window) {
+    const ro = new ResizeObserver(() => schedule());
+    // #hit-fab 与面板可能晚到，这里定期挂钩
+    const hook = () => {
+      const f = document.getElementById('hit-fab');
+      if (f && !f._kbObserved) { ro.observe(f); f._kbObserved = true; }
+      const p = document.getElementById('hit-fab-panel');
+      if (p && !p._kbObserved) { ro.observe(p); p._kbObserved = true; }
+    };
+    hook();
+    setInterval(hook, 800);
+  }
+
+  // 首次与保底定时
+  schedule();
+  setTimeout(schedule, 200);
+  setInterval(schedule, 1500);
+})();
+</script>
+</body>
+</html>

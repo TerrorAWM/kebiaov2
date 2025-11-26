@@ -1,0 +1,185 @@
+[
+    {
+        "id": "auto-hit",
+        "name": "HIT",
+        "csv": {
+            "encoding": "utf-8",
+            "header_row_must_include": [
+                "星期一",
+                "星期二",
+                "星期三",
+                "星期四",
+                "星期五",
+                "星期六",
+                "星期日"
+            ],
+            "title_rows_to_skip": 1,
+            "section_col": 0,
+            "period_col": 1,
+            "day_cols_from": 2,
+            "day_cols_count": 7,
+            "period_pattern": "第(?<nums>[0-9,，\\-、]+)节",
+            "split_cell_by": "\\n+",
+            "skip_tokens": [
+                "",
+                "-",
+                "—",
+                "— —",
+                "— — —"
+            ],
+            "detail_line_regex": "^(?<teacher>[^\\[]+?)\\[(?<weeks>[^\\]]+)\\]周(?<room>.*)$",
+            "room_fallback_keywords": [
+                "正心",
+                "致知",
+                "格物",
+                "理学",
+                "管理",
+                "电机",
+                "机电",
+                "主楼",
+                "机械",
+                "G",
+                "B",
+                "成教",
+                "一校区",
+                "二校区",
+                "校区",
+                "楼",
+                "教室"
+            ],
+            "normalize": {
+                "fullwidth_to_halfwidth": true,
+                "replace_cn_comma_to_en": true,
+                "replace_cn_dash_to_en": true
+            },
+            "week_type_rules": [
+                {
+                    "contains": "单周",
+                    "week_type": "odd"
+                },
+                {
+                    "contains": "双周",
+                    "week_type": "even"
+                }
+            ],
+            "ai": false,
+            "ai_prompt": ""
+        }
+    },
+    {
+        "id": "auto-hit-ai",
+        "name": "HIT（AI by DeepSeek）",
+        "csv": {
+            "encoding": "utf-8",
+            "header_row_must_include": [
+                "星期一",
+                "星期二",
+                "星期三",
+                "星期四",
+                "星期五",
+                "星期六",
+                "星期日"
+            ],
+            "title_rows_to_skip": 1,
+            "section_col": 0,
+            "period_col": 1,
+            "day_cols_from": 2,
+            "day_cols_count": 7,
+            "period_pattern": "第(?<nums>[0-9,，\\-、]+)节",
+            "split_cell_by": "\\n+",
+            "skip_tokens": [
+                "",
+                "-",
+                "—",
+                "— —",
+                "— — —"
+            ],
+            "detail_line_regex": "^(?<teacher>[^\\[]+?)\\[(?<weeks>[^\\]]+)\\]周(?<room>.*)$",
+            "room_fallback_keywords": [
+                "正心",
+                "致知",
+                "格物",
+                "理学",
+                "管理",
+                "电机",
+                "机电",
+                "主楼",
+                "机械",
+                "G",
+                "B",
+                "成教",
+                "成教楼",
+                "一校区",
+                "二校区",
+                "校区",
+                "楼",
+                "教室"
+            ],
+            "normalize": {
+                "fullwidth_to_halfwidth": true,
+                "replace_cn_comma_to_en": true,
+                "replace_cn_dash_to_en": true
+            },
+            "week_type_rules": [
+                {
+                    "contains": "单周",
+                    "week_type": "odd"
+                },
+                {
+                    "contains": "双周",
+                    "week_type": "even"
+                }
+            ],
+            "ai": true,
+            "ai_prompt": "你是课表解析助手。请将下面整张课表 CSV（中文表头、逗号分隔，含“上午/下午/晚上”“第x,y节”行，列为 星期一~星期日）解析为 JSON：{\"courses\":[{...}]}\n\n【字段要求】\n- name: 课程名（如 “Web开发技术”）。\n- teacher: 教师名（如 “田英鑫”）。\n- room: 教室/楼（如 “正心34”、“成教楼402”）。\n- day: 星期数字，周一=1，…，周日=7（据列标题判定）。\n- periods: 整数数组，比如 “第1,2节” => [1,2]，“第5-8节” => [5,6,7,8]。\n- weeks: 用两位数字与逗号/短横线标准化，例如 “1-13周” => \"01-13\"；“[3-4]周，[6，7]周” => \"03-04,06,07\"；去掉“周”字与括号。\n- week_type: 若文案含“单周”=> \"odd\"，“双周”=>\"even\"，否则 \"all\"。\n- note: 可填该行的“上午/下午/晚上”等分段信息或留空。\n\n【单元格拆分规则】\n- 一格内可能有多门课。\n- 常见排版：课程名独占一行；下一行是“教师[周次]周教室”，例如：\n  Web开发技术\\n田英鑫[1-7]周正心34\n- 也可能直接连续粘在一起，多个课程交替出现：\n  操作系统C\\n郑铁然[1-9]周正心611\\n复变函数与积分变换A\\n李贯锋[1-13]周致知24\\n软件过程与项目管理C\\n范国祥[10-17]周正心716\n- 也可能“教室”单独落在下一行（如“成教楼402”），需要并回上一门课。\n\n【输出格式】\n只输出严格 JSON，对象顶层仅包含 \"courses\" 键。不要任何解释、注释或多余文本。确保所有周次两位数字、不带中文标点。"
+        }
+    },
+    {
+        "id": "hit-manual-txt",
+        "name": "HIT-TXT ",
+        "csv": {
+            "encoding": "utf-8",
+            "manual_txt": true,
+            "day_token_regex": "^\\s*(星期[一二三四五六日])\\s*$",
+            "period_token_regex": "^\\s*(\\d{1,2}(?:-\\d{1,2}|(?:,\\d{1,2})*))\\s*$",
+            "detail_line_regex": "^(?<teacher>[^\\[]+?)\\[(?<weeks>[^\\]]+)\\]周(?<room>.*)$",
+            "normalize": {
+                "fullwidth_to_halfwidth": true,
+                "replace_cn_comma_to_en": true,
+                "replace_cn_dash_to_en": true
+            },
+            "week_type_rules": [
+                {
+                    "contains": "单周",
+                    "week_type": "odd"
+                },
+                {
+                    "contains": "双周",
+                    "week_type": "even"
+                }
+            ],
+            "room_fallback_keywords": [
+                "正心",
+                "致知",
+                "格物",
+                "理学",
+                "管理",
+                "电机",
+                "机电",
+                "主楼",
+                "机械",
+                "G",
+                "B",
+                "成教",
+                "成教楼",
+                "一校区",
+                "二校区",
+                "校区",
+                "楼",
+                "教室"
+            ],
+            "ai": false,
+            "ai_prompt": ""
+        }
+    }
+]
