@@ -447,6 +447,19 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
                 <?php foreach ($headerIdxs as $didx): ?>
                   <?php
                     $list = $grid[$didx][$pi] ?? [];
+                    // 过滤字段
+                    if (!empty($list)) {
+                        foreach ($list as &$cItem) {
+                            if (!$showName) unset($cItem['name']);
+                            if (!$showTeacher) unset($cItem['teacher']);
+                            if (!$showRoom) unset($cItem['room']);
+                            if (!$showWeeks) unset($cItem['weeks']);
+                            // note 也不应该显示？原逻辑没提，但为了安全最好也过滤，或者看需求。
+                            // 暂时只过滤 UI 上可配置的 4 项。
+                        }
+                        unset($cItem);
+                    }
+
                     $cellCls = '';
                     if (!empty($currentHighlight[$didx][$pi] ?? null)) $cellCls = 'cell-current';
                     elseif (!empty($nextHighlight[$didx][$pi] ?? null)) $cellCls = 'cell-next';
