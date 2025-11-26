@@ -16,14 +16,7 @@ if (file_exists(__DIR__ . '/../config.php')) {
         // 如果不是在第3步（完成页面），则返回404
         if ($current_step != 3) {
             http_response_code(404);
-            // 输出标准的404页面，不暴露任何系统信息
-            exit('<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
-<html><head>
-<title>404 Not Found</title>
-</head><body>
-<h1>Not Found</h1>
-<p>The requested URL was not found on this server.</p>
-</body></html>');
+            exit;
         }
         // step=3时允许显示完成页面
     }
