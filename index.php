@@ -242,11 +242,20 @@ if (isset($_GET['api'])) {
         if (empty($clean)) $clean = ['name','teacher','room'];
         $display_fields_json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
 
+        // 课表范围
+        $scope_arr = $payload['scope'] ?? ['main'];
+        $scope_clean = [];
+        foreach ($scope_arr as $s) {
+            if (in_array($s, ['main','lab'], true)) $scope_clean[] = $s;
+        }
+        if (empty($scope_clean)) $scope_clean = ['main'];
+        $scope_value = implode(',', $scope_clean);
+
         $token = generate_token();
         $share_pass = generate_share_pass($uid);
 
-        $ins = db()->prepare('INSERT INTO shared_links(user_id, token, share_pass, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?)');
-        $ins->execute([$uid, $token, $share_pass, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
+        $ins = db()->prepare('INSERT INTO shared_links(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
+        $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
 
         $url = base_url().'/share_kb.php?token='.rawurlencode($token).'&pass='.rawurlencode($share_pass);
         json_out(['ok'=>true, 'url'=>$url, 'token'=>$token, 'pass'=>$share_pass]);
@@ -254,7 +263,7 @@ if (isset($_GET['api'])) {
 
     if ($api === 'share_list') {
         $uid = share_require_owner();
-        $rows = db()->prepare('SELECT id, token, share_pass, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM shared_links WHERE user_id=? ORDER BY id DESC');
+        $rows = db()->prepare('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM shared_links WHERE user_id=? ORDER BY id DESC');
         $rows->execute([$uid]);
         $out = [];
         while ($r = $rows->fetch()) {
@@ -1556,11 +1565,20 @@ async function createShareLink(){
   if (document.getElementById('sc_room').checked) df.push('room');
   if (document.getElementById('sc_weeks').checked) df.push('weeks');
 
+  // scope - 课表选择
+  const scope = [];
+  if (document.getElementById('sc_scope_main').checked) scope.push('main');
+  if (document.getElementById('sc_scope_lab').checked) scope.push('lab');
+  if (scope.length === 0) {
+    alert('请至少选择一个课表进行分享');
+    return;
+  }
+
   try{
     const r = await fetch(buildApiUrl('share_create'), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df })
+      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df, scope: scope })
     });
     const j = await r.json();
     if (!j.ok) { alert(j.error||'创建失败'); return; }

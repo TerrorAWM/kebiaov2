@@ -48,7 +48,7 @@ CREATE TABLE `shared_links` (
   `user_id` int(10) UNSIGNED NOT NULL,
   `token` char(32) NOT NULL,
   `share_pass` char(4) NOT NULL,
-  `scope` set('main','lab') NOT NULL DEFAULT 'main',
+  `scope` varchar(20) NOT NULL DEFAULT 'main',
   `tz_mode` enum('client_dynamic','client_fixed','custom') NOT NULL DEFAULT 'client_dynamic',
   `tz_value` varchar(64) DEFAULT NULL,
   `display_fields` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`display_fields`)),

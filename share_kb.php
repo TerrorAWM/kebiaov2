@@ -323,19 +323,21 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
         <?php if (!empty($link['expires_at'])): ?>
           <span class="badge text-bg-light border">到期：<?= h($link['expires_at']) ?> UTC</span>
         <?php endif; ?>
-        <?php
-          // 显示当前查看的课表类型
-          $viewType = $_GET['view'] ?? 'main';
-          if (!in_array($viewType, ['main', 'lab'], true)) $viewType = 'main';
-          $scopeArr = explode(',', $link['scope'] ?? 'main');
-          $hasMain = in_array('main', $scopeArr, true);
-          $hasLab = in_array('lab', $scopeArr, true);
-        ?>
-        <?php if ($hasMain && $hasLab): ?>
-          <span class="badge text-bg-info">
-            当前：<?= $viewType === 'main' ? '主课表' : '实验课表' ?>
-          </span>
-        <?php endif; ?>
+      <?php endif; ?>
+      
+      <?php
+        // 显示当前查看的课表类型（移到link块外）
+        $viewType = $_GET['view'] ?? 'main';
+        if (!in_array($viewType, ['main', 'lab'], true)) $viewType = 'main';
+        $scopeArr = $link ? explode(',', $link['scope'] ?? 'main') : ['main'];
+        $hasMain = in_array('main', $scopeArr, true);
+        $hasLab = in_array('lab', $scopeArr, true);
+      ?>
+      
+      <?php if ($link && $hasMain && $hasLab): ?>
+        <span class="badge text-bg-info">
+          当前：<?= $viewType === 'main' ? '主课表' : '实验课表' ?>
+        </span>
       <?php endif; ?>
     </div>
     <div class="d-flex gap-2">
