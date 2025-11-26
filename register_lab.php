@@ -720,6 +720,16 @@ function goStep(n){
   // Step2 进入时加载一次模板（空查询）
   if (n === 2) ensureTemplatesLoadedOnce();
 
+  // Step2 -> 3: 必须有时段
+  if (n === 3) {
+    if (!STATE.timeslots || !STATE.timeslots.length) { alert('请至少添加一个时段'); return; }
+  }
+
+  // Step3 -> 4: 必须有课程
+  if (n === 4) {
+    if (!STATE.courses || !STATE.courses.length) { alert('请至少添加一门课程'); return; }
+  }
+
   // Step4 展示核对信息
   if (n === 4){
     document.getElementById('chk_start').textContent = STATE.start_date;
@@ -1054,6 +1064,9 @@ async function saveAll(){
   if (!STATE.start_date || !/^\d{4}-\d{2}-\d{2}$/.test(STATE.start_date)) { alert('开学日期无效'); return; }
   if (!STATE.timeslots.length){ alert('请先设置时段'); return; }
   if (!STATE.courses.length){ alert('至少添加一门课程'); return; }
+
+  // Final validation confirmation
+  if (!confirm('确认保存当前实验课表配置？\n保存后将覆盖原有的实验课表数据。')) return;
 
   // 保证 tz 与 tz_sync 与 UI 一致
   {
