@@ -155,24 +155,31 @@ if (!is_logged_in()) { header('Location: index.php'); exit; }
   </div>
 
   <!-- 危险区域 -->
-  <div class="mb-5">
-    <div class="section-title text-danger">危险区域</div>
-    <div class="card border-danger border-opacity-25">
-      <div class="card-body">
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <div>
-            <h6 class="text-danger mb-1">清空主课表</h6>
-            <div class="small text-muted">删除所有主课表课程数据，不可恢复。</div>
+  <div class="mb-5 border border-danger border-opacity-25 rounded p-3">
+    <div class="d-flex align-items-center justify-content-between">
+      <div class="section-title text-danger mb-0">危险区域</div>
+      <button class="btn btn-sm btn-outline-danger border-0" type="button" data-bs-toggle="collapse" data-bs-target="#dangerZone" aria-expanded="false">
+        展开 / 收起
+      </button>
+    </div>
+    <div class="collapse mt-3" id="dangerZone">
+      <div class="card border-0 bg-danger bg-opacity-10">
+        <div class="card-body">
+          <div class="d-flex align-items-center justify-content-between mb-3">
+            <div>
+              <h6 class="text-danger mb-1">清空主课表</h6>
+              <div class="small text-muted">删除所有主课表课程数据，不可恢复。</div>
+            </div>
+            <button class="btn btn-outline-danger btn-sm" onclick="clearMain()">清空主课表</button>
           </div>
-          <button class="btn btn-outline-danger btn-sm" onclick="clearMain()">清空...</button>
-        </div>
-        <hr>
-        <div class="d-flex align-items-center justify-content-between">
-          <div>
-            <h6 class="text-danger mb-1">清空实验课表</h6>
-            <div class="small text-muted">删除所有实验课表课程数据，不可恢复。</div>
+          <hr class="border-danger border-opacity-25">
+          <div class="d-flex align-items-center justify-content-between">
+            <div>
+              <h6 class="text-danger mb-1">清空实验课表</h6>
+              <div class="small text-muted">删除所有实验课表课程数据，不可恢复。</div>
+            </div>
+            <button class="btn btn-outline-danger btn-sm" onclick="clearLab()">清空实验课表</button>
           </div>
-          <button class="btn btn-outline-danger btn-sm" onclick="clearLab()">清空...</button>
         </div>
       </div>
     </div>
