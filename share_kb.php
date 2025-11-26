@@ -110,8 +110,20 @@ try {
 // ======= 读取课表数据 =======
 $owner_id = (int)$link['user_id'];
 
-// 用户课表 JSON
-$sch = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ?');
+// 确定要查看的课表类型
+$viewType = $_GET['view'] ?? 'main';
+if (!in_array($viewType, ['main', 'lab'], true)) $viewType = 'main';
+
+// 检查scope中是否包含请求的课表类型
+$scopeArr = explode(',', $link['scope'] ?? 'main');
+if (!in_array($viewType, $scopeArr, true)) {
+    // 如果请求的类型不在scope中，默认使用scope中的第一个
+    $viewType = $scopeArr[0] ?? 'main';
+}
+
+// 根据viewType加载对应的课表
+$tableName = $viewType === 'lab' ? 'user_lab_schedule' : 'user_schedule';
+$sch = db()->prepare("SELECT data FROM {$tableName} WHERE user_id = ?");
 $sch->execute([$owner_id]);
 $schRow = $sch->fetch();
 $schedule = $schRow ? (json_decode($schRow['data'] ?? '{}', true) ?: []) : [];
@@ -305,17 +317,38 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     <div class="d-flex align-items-center gap-2">
       <span class="badge text-bg-primary">共享课表</span>
       <?php if ($link): ?>
-        <!-- <span class="badge text-bg-light border">访问序号：<?= (int)$link['visit_count'] ?></span> -->
         <?php if ($link['max_visits'] !== null): ?>
           <span class="badge text-bg-light border">上限：<?= (int)$link['max_visits'] ?></span>
         <?php endif; ?>
         <?php if (!empty($link['expires_at'])): ?>
           <span class="badge text-bg-light border">到期：<?= h($link['expires_at']) ?> UTC</span>
         <?php endif; ?>
+        <?php
+          // 显示当前查看的课表类型
+          $viewType = $_GET['view'] ?? 'main';
+          if (!in_array($viewType, ['main', 'lab'], true)) $viewType = 'main';
+          $scopeArr = explode(',', $link['scope'] ?? 'main');
+          $hasMain = in_array('main', $scopeArr, true);
+          $hasLab = in_array('lab', $scopeArr, true);
+        ?>
+        <?php if ($hasMain && $hasLab): ?>
+          <span class="badge text-bg-info">
+            当前：<?= $viewType === 'main' ? '主课表' : '实验课表' ?>
+          </span>
+        <?php endif; ?>
       <?php endif; ?>
     </div>
-    <div>
-      <a class="btn btn-sm btn-outline-secondary" href="?t=<?=h($token)?><?= isset($_GET['all'])?'':'&all=1' ?><?= isset($_GET['p'])?('&p='.h($_GET['p'])):'' ?>">切换：<?= $showAll ? '仅本周' : '全部周' ?></a>
+    <div class="d-flex gap-2">
+      <?php if ($link && $hasMain && $hasLab): ?>
+        <?php
+          $otherView = $viewType === 'main' ? 'lab' : 'main';
+          $otherLabel = $otherView === 'main' ? '主课表' : '实验课表';
+        ?>
+        <a class="btn btn-sm btn-outline-info" href="?t=<?=h($token)?>&view=<?=$otherView?><?= isset($_GET['all'])?'&all=1':'' ?><?= isset($_GET['p'])?('&p='.h($_GET['p'])):'' ?>">
+          切换到<?=$otherLabel?>
+        </a>
+      <?php endif; ?>
+      <a class="btn btn-sm btn-outline-secondary" href="?t=<?=h($token)?><?= isset($_GET['view'])?('&view='.h($_GET['view'])):'' ?><?= isset($_GET['all'])?'':'&all=1' ?><?= isset($_GET['p'])?('&p='.h($_GET['p'])):'' ?>">切换：<?= $showAll ? '仅本周' : '全部周' ?></a>
     </div>
   </div>
 
