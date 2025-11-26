@@ -43,6 +43,15 @@ function try_get_main_schedule(int $uid): array {
     $obj  = json_decode((string)$json, true);
     return is_array($obj) ? $obj : [];
 }
+function try_get_lab_schedule(int $uid): array {
+    $stmt = db()->prepare('SELECT data FROM user_lab_schedule WHERE user_id = ? LIMIT 1');
+    $stmt->execute([$uid]);
+    $row = $stmt->fetch();
+    if (!$row) return [];
+    $json = $row['data'] ?? '{}';
+    $obj  = json_decode((string)$json, true);
+    return is_array($obj) ? $obj : [];
+}
 
 /* ============== 读取时段模板 ============== */
 function load_college_lab_templates(): array {
@@ -374,12 +383,17 @@ if (isset($_GET['api'])) {
 $logged = is_logged_in();
 $uid    = current_uid();
 $hasMain = false;
+$hasLab  = false;
 $mainStartDate = '';
 if ($logged) {
     $main = try_get_main_schedule($uid);
     if ($main) {
         $hasMain = true;
         $mainStartDate = (string)($main['start_date'] ?? '');
+    }
+    $lab = try_get_lab_schedule($uid);
+    if ($lab) {
+        $hasLab = true;
     }
 }
 ?>
@@ -445,7 +459,24 @@ if ($logged) {
     </div>
   <?php endif; ?>
 
-  <?php if($logged && !$hasMain): ?>
+  <?php if($logged && $hasLab): ?>
+    <!-- 已存在实验课表 -->
+    <div class="row justify-content-center mb-4">
+      <div class="col-12 col-md-8 col-lg-6">
+        <div class="card shadow-sm border-info">
+          <div class="card-body text-center py-5">
+            <h4 class="text-info mb-3">检测到已存在实验课表</h4>
+            <p class="text-muted mb-4">你已经注册过实验课表。如需修改课程信息，请前往编辑页面；<br>如需重新创建（清空现有数据），请前往 <b>账户设置</b> 执行“清空实验课表”操作。</p>
+            <div class="d-flex justify-content-center gap-3">
+              <a href="edit_lab.php" class="btn btn-primary">前往编辑</a>
+              <a href="settings.php" class="btn btn-outline-danger">账户设置 (清空)</a>
+              <a href="index.php" class="btn btn-outline-secondary">返回首页</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  <?php elseif($logged && !$hasMain): ?>
     <!-- 已登录但无主课表 -->
     <div class="alert alert-warning d-flex align-items-center justify-content-between">
       <div>检测到你的主课表尚未注册。请先在 <b>主课表注册</b> 完成设置后再回来绑定实验课表。</div>
@@ -453,6 +484,7 @@ if ($logged) {
     </div>
   <?php endif; ?>
 
+  <?php if((!$logged) || ($logged && !$hasLab && $hasMain)): ?>
   <div class="card shadow-sm">
     <div class="card-body">
 
@@ -663,6 +695,7 @@ if ($logged) {
 
     </div>
   </div>
+  <?php endif; ?>
 
 </div>
 
