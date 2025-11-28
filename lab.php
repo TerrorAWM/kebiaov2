@@ -337,6 +337,10 @@ if ($logged) {
     $stmt2 = db()->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id=? LIMIT 1');
     $stmt2->execute([$uid]);
     $sch = $stmt2->fetch();
+    if (!$sch) {
+        header('Location: register_lab.php');
+        exit;
+    }
     $schedule = $sch ? (json_decode($sch['data'] ?? '{}', true) ?: []) : [];
 
     // 时区策略
