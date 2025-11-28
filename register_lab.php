@@ -220,7 +220,7 @@ if (isset($_GET['api'])) {
                     (int)($_FILES['file']['size'] ?? 0),
                     json_encode($courses, JSON_UNESCAPED_UNICODE),
                 ]);
-            } catch (Throwable) { /* 可忽略，无此表时不报错中断 */ }
+            } catch (Throwable $e) { /* 可忽略，无此表时不报错中断 */ }
 
             json_out(['ok'=>true,'courses'=>$courses]);
         } catch (Throwable $e) {
@@ -318,7 +318,7 @@ if (isset($_GET['api'])) {
 
         // 基础校验
         if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $start_date)) json_out(['ok'=>false,'error'=>'开学日期无效（YYYY-MM-DD）'], 400);
-        try { new DateTimeZone($tz); } catch(Throwable) { json_out(['ok'=>false,'error'=>'时区无效'], 400); }
+        try { new DateTimeZone($tz); } catch(Throwable $e) { json_out(['ok'=>false,'error'=>'时区无效'], 400); }
         if (!is_array($enabled_days) || empty($enabled_days)) $enabled_days = [1,2,3,4,5,6,7];
 
         // timeslots 必须含 idx/start/end
