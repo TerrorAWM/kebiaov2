@@ -315,6 +315,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
 
   <div class="mb-3 d-flex align-items-center justify-content-between">
     <div class="d-flex align-items-center gap-2">
+      <?php include __DIR__ . '/includes/github_badge.php'; ?>
       <span class="badge text-bg-primary">共享课表</span>
       <?php if ($link): ?>
         <?php if ($link['max_visits'] !== null): ?>
@@ -681,6 +682,7 @@ function findNext(dayToday, hhmm, slots){
   tick(); setInterval(tick, 1000);
 })();
 </script>
+<?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>
 <?php

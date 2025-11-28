@@ -68,9 +68,6 @@ CREATE TABLE `shared_links` (
 CREATE TABLE `user_accounts` (
   `user_id` int(10) UNSIGNED NOT NULL,
   `pin` char(4) NOT NULL,
-  `email` varchar(255) DEFAULT NULL,
-  `password_hash` varchar(255) DEFAULT NULL,
-  `role` enum('user','admin','super_admin') NOT NULL DEFAULT 'user',
   `profile` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`profile`)),
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;

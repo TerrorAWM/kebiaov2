@@ -129,25 +129,11 @@ if (isset($_GET['api'])) {
     $api = $_GET['api'];
 
     if ($api === 'login' && $_SERVER['REQUEST_METHOD'] === 'POST') {
-        $uid = trim($_POST['uid'] ?? ''); $pin = $_POST['pin'] ?? '';
-        
-        // Allow email or user_id
-        $isEmail = filter_var($uid, FILTER_VALIDATE_EMAIL);
-        if (!$isEmail && !preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字或有效邮箱'], 400);
+        $uid = $_POST['uid'] ?? ''; $pin = $_POST['pin'] ?? '';
+        if (!preg_match('/^\d{4,6}$/', $uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字'], 400);
         if (!preg_match('/^\d{4}$/', $pin))  json_out(['ok'=>false,'error'=>'密码必须为 4 位数字'], 400);
-        
-        $sql = 'SELECT user_id, pin, profile FROM ' . table('user_accounts') . ' WHERE ';
-        $params = [];
-        if ($isEmail) {
-            $sql .= 'email = ? LIMIT 1';
-            $params[] = $uid;
-        } else {
-            $sql .= 'user_id = ? LIMIT 1';
-            $params[] = $uid;
-        }
-        
-        $stmt = db()->prepare($sql);
-        $stmt->execute($params); $row = $stmt->fetch();
+        $stmt = db()->prepare('SELECT user_id, pin, profile FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
+        $stmt->execute([$uid]); $row = $stmt->fetch();
         if (!$row || $row['pin'] !== $pin) json_out(['ok'=>false,'error'=>'账号或密码错误'], 403);
         $_SESSION['uid'] = (int)$row['user_id']; json_out(['ok'=>true]);
     }
@@ -584,10 +570,10 @@ if ($logged) {
       <div class="card shadow-sm">
         <div class="card-body">
           <h5 class="card-title mb-3 text-center">登录查看课表</h5>
-      <form id="loginForm" class="vstack gap-3" onsubmit="return false;">
+          <form id="loginForm" class="vstack gap-3" onsubmit="return false;">
             <div>
-              <label class="form-label">用户 ID / 邮箱</label>
-              <input class="form-control form-control-lg" name="uid" required>
+              <label class="form-label">用户 ID</label>
+              <input class="form-control form-control-lg" name="uid" inputmode="numeric" pattern="\d{4,6}" required>
             </div>
             <div>
               <label class="form-label">密码</label>
@@ -615,14 +601,6 @@ if ($logged) {
     $showTeacher= in_array('teacher', $displayFields, true);
     $showRoom   = in_array('room', $displayFields, true);
     $showWeeks  = in_array('weeks', $displayFields, true);
-    
-    // Check role
-    $role = 'user';
-    if ($LOGIN_MODE === 'session') {
-        $stmt = db()->prepare('SELECT role FROM ' . table('user_accounts') . ' WHERE user_id = ?');
-        $stmt->execute([$uid]);
-        $role = $stmt->fetchColumn() ?: 'user';
-    }
   ?>
 
   <!-- 顶部信息 -->
@@ -631,9 +609,7 @@ if ($logged) {
       <?php if ($startDate): ?><span class="badge text-bg-light border">开学日期：<?=h($startDate)?></span><?php endif; ?>
     </div>
     <div class="d-flex align-items-center gap-2">
-      <?php if ($role === 'super_admin'): ?>
-        <a class="btn btn-danger btn-sm" href="admin/">管理面板</a>
-      <?php endif; ?>
+      <?php include __DIR__ . '/includes/github_badge.php'; ?>
       <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
       <?php if ($LOGIN_MODE === 'session'): ?>
         <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
@@ -1790,5 +1766,6 @@ async function createShareLink(){
   setInterval(schedule, 1500);
 })();
 </script>
+<?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

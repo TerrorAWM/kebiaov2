@@ -599,6 +599,7 @@ if ($logged) {
       <?php if ($startDate): ?><span class="badge text-bg-light border">开学日期：<?=h($startDate)?></span><?php endif; ?>
     </div>
     <div class="d-flex align-items-center gap-2">
+      <?php include __DIR__ . '/includes/github_badge.php'; ?>
       <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
       <?php if ($LOGIN_MODE === 'session'): ?>
         <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
@@ -1720,5 +1721,6 @@ async function createShareLink(){
   setInterval(schedule, 1500);
 })();
 </script>
+<?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

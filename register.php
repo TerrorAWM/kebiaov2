@@ -181,7 +181,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
 
     if ($raw === '') json_out(['ok'=>false,'error'=>'缺少日程数据']);
     if (!valid_pin($pin)) json_out(['ok'=>false,'error'=>'PIN 必须是 4 位数字']);
-    if ($email !== '' && !valid_email($email)) json_out(['ok'=>false,'error'=>'邮箱格式不正确']);
+    if (!valid_email($email)) json_out(['ok'=>false,'error'=>'邮箱格式不正确']);
 
     $data = json_decode($raw, true);
     if (!is_array($data)) json_out(['ok'=>false,'error'=>'schedule_json 不是合法 JSON']);
@@ -227,8 +227,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
             'tz_timetable' => $tz,
             'cell_fields'  => ['name','teacher','room'],
         ];
-        $stmt = $pdo->prepare('INSERT INTO ' . table('user_accounts') . ' (user_id,pin,email,role,profile) VALUES (?,?,?,?,?)');
-        $stmt->execute([$user_id, $pin, ($email?:null), 'user', json_encode($profile, JSON_UNESCAPED_UNICODE)]);
+        $stmt = $pdo->prepare('INSERT INTO ' . table('user_accounts') . ' (user_id,pin,profile) VALUES (?,?,?)');
+        $stmt->execute([$user_id, $pin, json_encode($profile, JSON_UNESCAPED_UNICODE)]);
 
         $schedule = [
             'start_date'   => $start_date,
@@ -273,6 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
   </style>
 </head>
 <body>
+<?php include __DIR__ . '/includes/github_badge.php'; ?>
 <div class="container py-4">
   <div class="row justify-content-center">
     <div class="col-lg-10">
@@ -380,7 +381,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
             <h5 class="mb-3">5. 联系与安全</h5>
             <div class="row g-3">
               <div class="col-md-6">
-                <label class="form-label">邮箱（可选，用于找回）</label>
+                <label class="form-label">找回邮箱（可选）</label>
                 <input id="email" type="email" class="form-control" placeholder="例如 you@example.com">
               </div>
               <div class="col-md-3">
@@ -418,6 +419,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
     </div>
   </div>
 </div>
+
+<?php include __DIR__ . '/includes/footer.php'; ?>
 
 <!-- 仅 AI 模式使用的“处理中” Modal -->
 <div class="modal fade" id="busyModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
@@ -788,7 +791,6 @@ nextBtn?.addEventListener('click', async () => {
   } else if (STEP === 5) {
     const pin = $('#pin').value.trim();
     const email = $('#email').value.trim();
-    if (!/^\d{4}$/.test(pin)) return alert('PIN 必须是 4 位数字');
     if (!/^\d{4}$/.test(pin)) return alert('PIN 必须是 4 位数字');
     if (email && !/^\S+@\S+\.[\S]+$/.test(email)) return alert('邮箱格式不正确');
 
