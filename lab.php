@@ -553,6 +553,15 @@ if ($logged) {
     transition: transform .2s ease, box-shadow .2s ease;
   }
   /* #kb-gear .kb-fab-btn:hover{ transform: translateY(-2px); box-shadow: 0 12px 26px rgba(54, 54, 54, 0.45); } */
+  .gear-dropup {
+    position: absolute; bottom: 100%; right: 0; margin-bottom: 12px;
+    background: #fff; border: 1px solid #e5e7eb; border-radius: .75rem; padding: .5rem;
+    box-shadow: 0 10px 24px rgba(0,0,0,.12);
+    min-width: 120px;
+    display: none;
+  }
+  .gear-dropup.show { display: block; }
+  .gear-dropup .btn { width: 100%; text-align: left; }
 </style>
 </head>
 <body>
@@ -874,13 +883,15 @@ if ($logged) {
 <!-- ======= 右侧：设置 圆形按钮（避让 #hit-fab） ======= -->
 <?php if ($logged): ?>
   <div id="kb-gear" class="kb-fab" hidden>
-    <a href="edit.php" class="kb-fab-btn" aria-label="设置" title="设置">
-      <!-- <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" stroke="currentColor" stroke-width="1.7"/>
-        <path d="M20 12a8.01 8.01 0 0 0-.12-1.37l1.87-1.45-1.8-3.12-2.25.75A8.06 8.06 0 0 0 15.37 4L14 2h-4l-1.37 2a8.06 8.06 0 0 0-2.33 1.81l-2.25-.75-1.8 3.12L3.12 10.63A8.01 8.01 0 0 0 3 12c0 .46.04.91.12 1.37l-1.87 1.45 1.8 3.12 2.25-.75c.67.72 1.47 1.33 2.33 1.81L10 22h4l1.37-2c.86-.48 1.66-1.09 2.33-1.81l2.25.75 1.8-3.12-1.87-1.45c.08-.46.12-.91.12-1.37Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-      </svg> -->
-        <i class="fa-solid fa-gear"></i>
-    </a>
+    <div class="gear-dropup shadow" id="gearDropup">
+      <div class="vstack gap-2">
+        <a href="edit_lab.php" class="btn btn-outline-primary"><i class="fa-solid fa-pen-to-square me-2"></i>编辑</a>
+        <a href="settings.php" class="btn btn-outline-secondary"><i class="fa-solid fa-sliders me-2"></i>设置</a>
+      </div>
+    </div>
+    <button class="kb-fab-btn" id="btnGear" onclick="toggleGearMenu()" aria-label="菜单" title="菜单">
+      <i class="fa-solid fa-gear"></i>
+    </button>
   </div>
 <?php endif; ?>
 
@@ -1734,6 +1745,18 @@ async function createShareLink(){
   setTimeout(schedule, 200);
   setInterval(schedule, 1500);
 })();
+  // Gear Menu
+  function toggleGearMenu(){
+    const m = document.getElementById('gearDropup');
+    if(m) m.classList.toggle('show');
+  }
+  document.addEventListener('click', function(e){
+    const gear = document.getElementById('kb-gear');
+    if(gear && !gear.contains(e.target)){
+      const m = document.getElementById('gearDropup');
+      if(m) m.classList.remove('show');
+    }
+  });
 </script>
 <?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
