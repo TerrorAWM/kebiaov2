@@ -35,7 +35,16 @@ function json_out($arr, int $code = 200): void {
 function is_logged_in(): bool { return isset($_SESSION['uid']) && is_numeric($_SESSION['uid']); }
 function current_uid(): ?int { return is_logged_in() ? (int)$_SESSION['uid'] : null; }
 function try_get_main_schedule(int $uid): array {
-    $stmt = db()->prepare('SELECT data FROM user_schedule WHERE user_id = ? LIMIT 1');
+    $stmt = db()->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id = ? LIMIT 1');
+    $stmt->execute([$uid]);
+    $row = $stmt->fetch();
+    if (!$row) return [];
+    $json = $row['data'] ?? '{}';
+    $obj  = json_decode((string)$json, true);
+    return is_array($obj) ? $obj : [];
+}
+function try_get_lab_schedule(int $uid): array {
+    $stmt = db()->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id = ? LIMIT 1');
     $stmt->execute([$uid]);
     $row = $stmt->fetch();
     if (!$row) return [];
@@ -98,7 +107,7 @@ if (isset($_GET['api'])) {
         $pin = $_POST['pin'] ?? '';
         if (!preg_match('/^\d{4,6}$/', (string)$uid)) json_out(['ok'=>false,'error'=>'ID 必须为 4-6 位数字'], 400);
         if (!preg_match('/^\d{4}$/', (string)$pin))  json_out(['ok'=>false,'error'=>'密码必须为 4 位数字'], 400);
-        $stmt = db()->prepare('SELECT user_id, pin FROM user_accounts WHERE user_id = ? LIMIT 1');
+        $stmt = db()->prepare('SELECT user_id, pin FROM ' . table('user_accounts') . ' WHERE user_id = ? LIMIT 1');
         $stmt->execute([$uid]);
         $row = $stmt->fetch();
         if (!$row || (string)$row['pin'] !== (string)$pin) json_out(['ok'=>false,'error'=>'账号或密码错误'], 403);
@@ -203,7 +212,7 @@ if (isset($_GET['api'])) {
 
             // 记录 lab_uploads（可选）
             try {
-                $ins = db()->prepare('INSERT INTO lab_uploads (user_id, filename, mimetype, size_bytes, parsed_json) VALUES (?, ?, ?, ?, ?)');
+                $ins = db()->prepare('INSERT INTO ' . table('lab_uploads') . ' (user_id, filename, mimetype, size_bytes, parsed_json) VALUES (?, ?, ?, ?, ?)');
                 $ins->execute([
                     (int)$uid,
                     (string)($_FILES['file']['name'] ?? ''),
@@ -353,7 +362,7 @@ if (isset($_GET['api'])) {
         ];
         $json = json_encode($doc, JSON_UNESCAPED_UNICODE);
 
-        $sql = 'INSERT INTO user_lab_schedule (user_id, data) VALUES (?, ?)
+        $sql = 'INSERT INTO ' . table('user_lab_schedule') . ' (user_id, data) VALUES (?, ?)
                 ON DUPLICATE KEY UPDATE data = VALUES(data), updated_at = CURRENT_TIMESTAMP';
         db()->prepare($sql)->execute([(int)$uid, $json]);
         json_out(['ok'=>true]);
@@ -374,12 +383,17 @@ if (isset($_GET['api'])) {
 $logged = is_logged_in();
 $uid    = current_uid();
 $hasMain = false;
+$hasLab  = false;
 $mainStartDate = '';
 if ($logged) {
     $main = try_get_main_schedule($uid);
     if ($main) {
         $hasMain = true;
         $mainStartDate = (string)($main['start_date'] ?? '');
+    }
+    $lab = try_get_lab_schedule($uid);
+    if ($lab) {
+        $hasLab = true;
     }
 }
 ?>
@@ -445,7 +459,24 @@ if ($logged) {
     </div>
   <?php endif; ?>
 
-  <?php if($logged && !$hasMain): ?>
+  <?php if($logged && $hasLab): ?>
+    <!-- 已存在实验课表 -->
+    <div class="row justify-content-center mb-4">
+      <div class="col-12 col-md-8 col-lg-6">
+        <div class="card shadow-sm border-info">
+          <div class="card-body text-center py-5">
+            <h4 class="text-info mb-3">检测到已存在实验课表</h4>
+            <p class="text-muted mb-4">你已经注册过实验课表。如需修改课程信息，请前往编辑页面；<br>如需重新创建（清空现有数据），请前往 <b>账户设置</b> 执行“清空实验课表”操作。</p>
+            <div class="d-flex justify-content-center gap-3">
+              <a href="edit_lab.php" class="btn btn-primary">前往编辑</a>
+              <a href="settings.php" class="btn btn-outline-danger">账户设置 (清空)</a>
+              <a href="index.php" class="btn btn-outline-secondary">返回首页</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  <?php elseif($logged && !$hasMain): ?>
     <!-- 已登录但无主课表 -->
     <div class="alert alert-warning d-flex align-items-center justify-content-between">
       <div>检测到你的主课表尚未注册。请先在 <b>主课表注册</b> 完成设置后再回来绑定实验课表。</div>
@@ -453,6 +484,7 @@ if ($logged) {
     </div>
   <?php endif; ?>
 
+  <?php if((!$logged) || ($logged && !$hasLab && $hasMain)): ?>
   <div class="card shadow-sm">
     <div class="card-body">
 
@@ -663,6 +695,7 @@ if ($logged) {
 
     </div>
   </div>
+  <?php endif; ?>
 
 </div>
 
@@ -719,6 +752,16 @@ function goStep(n){
 
   // Step2 进入时加载一次模板（空查询）
   if (n === 2) ensureTemplatesLoadedOnce();
+
+  // Step2 -> 3: 必须有时段
+  if (n === 3) {
+    if (!STATE.timeslots || !STATE.timeslots.length) { alert('请至少添加一个时段'); return; }
+  }
+
+  // Step3 -> 4: 必须有课程
+  if (n === 4) {
+    if (!STATE.courses || !STATE.courses.length) { alert('请至少添加一门课程'); return; }
+  }
 
   // Step4 展示核对信息
   if (n === 4){
@@ -1054,6 +1097,9 @@ async function saveAll(){
   if (!STATE.start_date || !/^\d{4}-\d{2}-\d{2}$/.test(STATE.start_date)) { alert('开学日期无效'); return; }
   if (!STATE.timeslots.length){ alert('请先设置时段'); return; }
   if (!STATE.courses.length){ alert('至少添加一门课程'); return; }
+
+  // Final validation confirmation
+  if (!confirm('确认保存当前实验课表配置？\n保存后将覆盖原有的实验课表数据。')) return;
 
   // 保证 tz 与 tz_sync 与 UI 一致
   {

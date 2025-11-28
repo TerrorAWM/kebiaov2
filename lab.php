@@ -4,9 +4,6 @@ declare(strict_types=1);
 mb_internal_encoding('UTF-8');
 session_start();
 
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
 include_once __DIR__ . '/db.php';
 
 function db(): PDO {
@@ -148,7 +145,7 @@ if (isset($_GET['api'])) {
         $uid = require_login(); $payload = json_decode(file_get_contents('php://input'), true) ?: [];
         $tz = $payload['tz'] ?? '';
         if ($tz === '' || @new DateTimeZone($tz) === false) json_out(['ok'=>false,'error'=>'无效的时区'], 400);
-        $sql = "UPDATE " . table('user_accounts') . " SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
+        $sql = "UPDATE ' . table('user_accounts') . ' SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
         db()->prepare($sql)->execute([$tz, $uid]); json_out(['ok'=>true]);
     }
 
@@ -245,20 +242,11 @@ if (isset($_GET['api'])) {
         if (empty($clean)) $clean = ['name','teacher','room'];
         $display_fields_json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
 
-        // 课表范围
-        $scope_arr = $payload['scope'] ?? ['main'];
-        $scope_clean = [];
-        foreach ($scope_arr as $s) {
-            if (in_array($s, ['main','lab'], true)) $scope_clean[] = $s;
-        }
-        if (empty($scope_clean)) $scope_clean = ['main'];
-        $scope_value = implode(',', $scope_clean);
-
         $token = generate_token();
         $share_pass = generate_share_pass($uid);
 
-        $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
-        $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
+        $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?)');
+        $ins->execute([$uid, $token, $share_pass, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
 
         $url = base_url().'/share_kb.php?token='.rawurlencode($token).'&pass='.rawurlencode($share_pass);
         json_out(['ok'=>true, 'url'=>$url, 'token'=>$token, 'pass'=>$share_pass]);
@@ -266,7 +254,7 @@ if (isset($_GET['api'])) {
 
     if ($api === 'share_list') {
         $uid = share_require_owner();
-        $rows = db()->prepare('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC');
+        $rows = db()->prepare('SELECT id, token, share_pass, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC');
         $rows->execute([$uid]);
         $out = [];
         while ($r = $rows->fetch()) {
@@ -345,16 +333,15 @@ if ($logged) {
 
     $u = db()->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id = ?');
     $u->execute([$uid]); $upro = $u->fetch();
-    $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : [];
-
-    $s = db()->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id = ?');
-    $s->execute([$uid]); $sch = $s->fetch();
+    $profile = $upro ? (json_decode($upro['profile'] ?? '{}', true) ?: []) : []; // 2. 读取 schedule
+    $stmt2 = db()->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id=? LIMIT 1');
+    $stmt2->execute([$uid]);
+    $sch = $stmt2->fetch();
+    if (!$sch) {
+        header('Location: register_lab.php');
+        exit;
+    }
     $schedule = $sch ? (json_decode($sch['data'] ?? '{}', true) ?: []) : [];
-
-    // Check for lab schedule
-    $l = db()->prepare('SELECT 1 FROM ' . table('user_lab_schedule') . ' WHERE user_id = ? LIMIT 1');
-    $l->execute([$uid]);
-    $hasLab = (bool)$l->fetchColumn();
 
     // 时区策略
     $tzPref = $profile['tz_pref'] ?? 'timetable';
@@ -448,7 +435,7 @@ if ($logged) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>我的课表</title>
+<title>我的实验课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
 <link href="./assets/fontawesome-pp7.1.0/css/fontawesome.css" rel="stylesheet" />
@@ -597,7 +584,6 @@ if ($logged) {
               <input class="form-control form-control-lg" name="pin" inputmode="numeric" pattern="\d{4}" required>
             </div>
             <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">登录</button>
-            <a href="register.php" class="btn btn-outline-secondary w-100 mt-2">去注册</a>
           </form>
         </div>
       </div>
@@ -884,34 +870,14 @@ if ($logged) {
 <?php endif; ?>
 </div>
 
-<!-- ======= 左侧：分享 & 实验课表 圆形按钮 ======= -->
+<!-- ======= 左侧：切换到主课表按钮 ======= -->
 <?php if ($logged): ?>
-  <?php if ($LOGIN_MODE === 'session'): ?>
-    <?php $shareStyle = $hasLab ? '' : 'style="bottom: 24px;"'; ?>
-    <button class="fab fab-share" id="fabShare" title="分享课表" <?= $shareStyle ?>>
-      <!-- share icon -->
-      <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a2.5 2.5 0 1 0 1.983 4.09l-7.518 4.01a2.5 2.5 0 1 0 0 1.8l7.518 4.01A2.5 2.5 0 1 0 13.5 15a2.48 2.48 0 0 0 1.37-.418l-7.52-4.01a2.5 2.5 0 0 0 0-1.145l7.52-4.01A2.48 2.48 0 0 0 13.5 1z"/></svg> -->
-      <i class="fa-solid fa-share"></i>
-        <!-- <i class="fa-solid fa-user"></i> -->
-
-    </button>
-    <div class="share-dropup shadow" id="shareDropup">
-      <div class="vstack gap-2">
-        <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#shareCreateModal" onclick="hideShareDropup()">创建链接</button>
-        <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareManageModal" onclick="hideShareDropup()">管理链接</button>
-      </div>
-    </div>
-  <?php endif; ?>
-  <?php if ($hasLab): ?>
-  <a class="fab fab-lab text-decoration-none" href="lab.php" title="实验课表">
-    <!-- beaker icon -->
-    <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M6.5 1v2.5L2.126 10.02A2.5 2.5 0 0 0 4.25 14h7.5a2.5 2.5 0 0 0 2.124-3.98L9.5 3.5V1h-3zM8 4.118 12.874 12H3.126L8 4.118z"/></svg> -->
-    <!-- <i class="fa-solid fa-flask"></i> -->
-    <!-- <i class="fa-regular fa-flask"></i> -->
-    <i class="fa-sharp fa-solid fa-flask"></i>
-
-</a>
-  <?php endif; ?>
+  <!-- 切换到主课表 -->
+  <a class="fab fab-lab text-decoration-none" href="index.php" title="主课表" style="background:#0d6efd; color:#fff;">
+    <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/>
+    </svg>
+  </a>
 <?php endif; ?>
 
 <!-- ======= 右侧：设置 圆形按钮（避让 #hit-fab） ======= -->
@@ -919,7 +885,7 @@ if ($logged) {
   <div id="kb-gear" class="kb-fab" hidden>
     <div class="gear-dropup shadow" id="gearDropup">
       <div class="vstack gap-2">
-        <a href="edit.php" class="btn btn-outline-primary"><i class="fa-solid fa-pen-to-square me-2"></i>编辑</a>
+        <a href="edit_lab.php" class="btn btn-outline-primary"><i class="fa-solid fa-pen-to-square me-2"></i>编辑</a>
         <a href="settings.php" class="btn btn-outline-secondary"><i class="fa-solid fa-sliders me-2"></i>设置</a>
       </div>
     </div>
@@ -1011,15 +977,6 @@ if ($logged) {
                 <input id="visitInput" type="number" class="form-control" style="max-width:140px" min="1" step="1" value="20" disabled>
               </div>
             </div>
-          </div>
-
-          <div class="col-12">
-            <label class="form-label">分享课表选择</label>
-            <div class="row g-2">
-              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_scope_main" checked><label class="form-check-label" for="sc_scope_main">主课表</label></div></div>
-              <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_scope_lab"><label class="form-check-label" for="sc_scope_lab">实验课表</label></div></div>
-            </div>
-            <div class="form-text">可同时勾选，分享链接将包含所选课表</div>
           </div>
 
           <div class="col-12">
@@ -1599,20 +1556,11 @@ async function createShareLink(){
   if (document.getElementById('sc_room').checked) df.push('room');
   if (document.getElementById('sc_weeks').checked) df.push('weeks');
 
-  // scope - 课表选择
-  const scope = [];
-  if (document.getElementById('sc_scope_main').checked) scope.push('main');
-  if (document.getElementById('sc_scope_lab').checked) scope.push('lab');
-  if (scope.length === 0) {
-    alert('请至少选择一个课表进行分享');
-    return;
-  }
-
   try{
     const r = await fetch(buildApiUrl('share_create'), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df, scope: scope })
+      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df })
     });
     const j = await r.json();
     if (!j.ok) { alert(j.error||'创建失败'); return; }

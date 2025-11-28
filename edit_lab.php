@@ -36,12 +36,6 @@ function valid_weeks_string(string $s): bool {
   $s = str_replace(' ', '', $s);
   return (bool)preg_match('/^\d{2}(?:-\d{2})?(?:,\d{2}(?:-\d{2})?)*$/', $s);
 }
-function pick_cell_fields(array $arr): array {
-  $allow = ['name','teacher','room','weeks'];
-  $a = array_values(array_intersect($allow, $arr));
-  if (!$a) $a = ['name','teacher','room'];
-  return $a;
-}
 
 /* ====== API 入口 ====== */
 if (isset($_GET['api'])) {
@@ -79,21 +73,8 @@ if (isset($_GET['api'])) {
     $uid = require_login();
     $pdo = db();
 
-    // 读取 profile
-    $stmt = $pdo->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
-    $stmt->execute([$uid]);
-    $acc = $stmt->fetch();
-    $profile = [];
-    if ($acc && isset($acc['profile']) && $acc['profile'] !== null && $acc['profile'] !== '') {
-      $profile = json_decode((string)$acc['profile'], true);
-      if (!is_array($profile)) $profile = [];
-    }
-    if (!isset($profile['cell_fields']) || !is_array($profile['cell_fields'])) {
-      $profile['cell_fields'] = ['name','teacher','room'];
-    }
-
-    // 读取 schedule
-    $stmt2 = $pdo->prepare('SELECT data FROM ' . table('user_schedule') . ' WHERE user_id=? LIMIT 1');
+    // 读取 lab schedule
+    $stmt2 = $pdo->prepare('SELECT data FROM ' . table('user_lab_schedule') . ' WHERE user_id=? LIMIT 1');
     $stmt2->execute([$uid]);
     $sch = $stmt2->fetch();
     $schedule = [
@@ -108,7 +89,7 @@ if (isset($_GET['api'])) {
       if (is_array($tmp)) $schedule = array_merge($schedule, $tmp);
     }
 
-    json_out(['ok'=>true, 'profile'=>$profile, 'schedule'=>$schedule]);
+    json_out(['ok'=>true, 'schedule'=>$schedule]);
   }
 
   // 保存
@@ -117,13 +98,9 @@ if (isset($_GET['api'])) {
     $pdo = db();
 
     $schedule_json = $_POST['schedule_json'] ?? '';
-    $profile_json  = $_POST['profile_json'] ?? '';
-
     $schedule = json_decode($schedule_json, true);
-    $profile  = json_decode($profile_json, true);
 
     if (!is_array($schedule)) json_out(['ok'=>false,'error'=>'schedule_json 非法']);
-    if (!is_array($profile))  json_out(['ok'=>false,'error'=>'profile_json 非法']);
 
     // 校验 schedule
     $start_date   = $schedule['start_date'] ?? '';
@@ -169,28 +146,13 @@ if (isset($_GET['api'])) {
     $schedule['timeslots']    = array_values($timeslots);
     $schedule['courses']      = array_values($courses);
 
-    // 校验 profile
-    $cell_fields = isset($profile['cell_fields']) && is_array($profile['cell_fields']) ? $profile['cell_fields'] : ['name','teacher','room'];
-    $profile['cell_fields'] = pick_cell_fields($cell_fields);
-
     $pdo->beginTransaction();
     try {
-      // update schedule
-      $stmtU = $pdo->prepare('UPDATE ' . table('user_schedule') . ' SET data=?, updated_at=NOW() WHERE user_id=?');
-      $ok1 = false;
-      try {
-        $ok1 = $stmtU->execute([json_encode($schedule, JSON_UNESCAPED_UNICODE), $uid]);
-      } catch (Throwable $e) {
-        // 如果没有 updated_at 列（老表），退化为不更新该列
-        $stmtU = $pdo->prepare('UPDATE ' . table('user_schedule') . ' SET data=? WHERE user_id=?');
-        $ok1 = $stmtU->execute([json_encode($schedule, JSON_UNESCAPED_UNICODE), $uid]);
-      }
-      if (!$ok1) throw new RuntimeException('更新 user_schedule 失败');
-
-      // update profile
-      $stmtP = $pdo->prepare('UPDATE ' . table('user_accounts') . ' SET profile=? WHERE user_id=?');
-      $ok2 = $stmtP->execute([json_encode($profile, JSON_UNESCAPED_UNICODE), $uid]);
-      if (!$ok2) throw new RuntimeException('更新 user_accounts.profile 失败');
+      // update lab schedule
+      $stmtU = $pdo->prepare('INSERT INTO ' . table('user_lab_schedule') . ' (user_id, data, updated_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE data=VALUES(data), updated_at=NOW()');
+      $ok1 = $stmtU->execute([$uid, json_encode($schedule, JSON_UNESCAPED_UNICODE)]);
+      
+      if (!$ok1) throw new RuntimeException('更新 user_lab_schedule 失败');
 
       $pdo->commit();
       json_out(['ok'=>true]);
@@ -199,6 +161,8 @@ if (isset($_GET['api'])) {
       json_out(['ok'=>false,'error'=>$e->getMessage()]);
     }
   }
+
+
 
   // 未知 API
   json_out(['ok'=>false,'error'=>'未知API'], 404);
@@ -212,10 +176,9 @@ $logged = is_logged_in();
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>编辑我的课表</title>
+<title>编辑实验课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
-  /* 与 index 一致的登录 UI 体验 + 编辑页样式微调 */
   body { background: #f6f7fb; }
   @media (min-width: 992px){
     body{ font-size: .95rem; }
@@ -235,12 +198,12 @@ $logged = is_logged_in();
 <div class="container py-4">
 
 <?php if (!$logged): ?>
-  <!-- 登录卡片（与 index 一致的视觉） -->
+  <!-- 登录卡片 -->
   <div class="row justify-content-center">
     <div class="col-12 col-md-6 col-lg-4">
       <div class="card shadow-sm">
         <div class="card-body">
-          <h5 class="card-title mb-3 text-center">登录编辑课表</h5>
+          <h5 class="card-title mb-3 text-center">登录编辑实验课表</h5>
           <form id="loginForm" class="vstack gap-3" onsubmit="return false;">
             <div>
               <label class="form-label">用户 ID（4-6 位数字）</label>
@@ -254,7 +217,6 @@ $logged = is_logged_in();
           </form>
         </div>
       </div>
-      <p class="text-center text-muted mt-3">* 登录后可修改课程、时间与开学设置</p>
     </div>
   </div>
 
@@ -262,6 +224,7 @@ $logged = is_logged_in();
   <!-- 顶部工具栏 -->
   <div class="toolbar">
     <div class="d-flex align-items-center gap-2">
+      <span class="badge text-bg-info border">实验课表</span>
       <span class="badge text-bg-light border">已登录：<b class="code"><?=(int)$_SESSION['uid']?></b></span>
     </div>
     <div class="d-flex align-items-center gap-2">
@@ -288,9 +251,7 @@ $logged = is_logged_in();
     <div class="tab-pane fade show active" id="pane-courses" role="tabpanel">
       <div class="d-flex flex-wrap gap-2 mb-2">
         <button class="btn btn-outline-primary btn-sm" id="btnAddCourse">新增课程</button>
-        <button class="btn btn-outline-secondary btn-sm" id="btnImportCourse">从CSV导入</button>
-        <button class="btn btn-outline-secondary btn-sm" id="btnPasteCourse">粘贴文本导入</button>
-        <span class="smallmuted">CSV/文本需要表头：name,teacher,room,day,periods,weeks,week_type,note</span>
+        <span class="smallmuted">CSV/文本导入请使用注册向导</span>
       </div>
 
       <div class="table-responsive">
@@ -317,9 +278,6 @@ $logged = is_logged_in();
     <div class="tab-pane fade" id="pane-times" role="tabpanel">
       <div class="d-flex flex-wrap gap-2 mb-2">
         <button class="btn btn-outline-primary btn-sm" id="btnAddTime">新增时段</button>
-        <button class="btn btn-outline-secondary btn-sm" id="btnImportTime">从CSV导入</button>
-        <button class="btn btn-outline-secondary btn-sm" id="btnPasteTime">粘贴文本导入</button>
-        <span class="smallmuted">CSV/文本需要表头：idx,start,end（时间格式：HH:MM）</span>
       </div>
 
       <div class="table-responsive">
@@ -366,40 +324,12 @@ $logged = is_logged_in();
       </div>
 
       <div class="mt-4">
-        <label class="form-label">单元格显示字段</label>
-        <div class="d-flex gap-3 flex-wrap">
-          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_name"><label class="form-check-label" for="f_name">课程名</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_teacher"><label class="form-check-label" for="f_teacher">教师</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_room"><label class="form-check-label" for="f_room">教室</label></div>
-          <div class="form-check"><input class="form-check-input" type="checkbox" id="f_weeks"><label class="form-check-label" for="f_weeks">周数</label></div>
-        </div>
-        <div class="text-muted small mt-2">* 默认：课程名、教师、教室。</div>
-      </div>
-
-      <div class="mt-4">
         <button class="btn btn-primary" id="btnSaveInTab">保存修改</button>
       </div>
     </div>
   </div>
 
 <?php endif; ?>
-</div>
-
-<!-- 模态框：CSV/粘贴导入 -->
-<div class="modal fade" id="importModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header"><h5 class="modal-title">导入数据</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button></div>
-      <div class="modal-body">
-        <input id="import_file" type="file" class="form-control mb-2" accept=".csv,text/csv,text/plain">
-        <textarea id="import_text" class="form-control" rows="10" placeholder="粘贴 CSV/TSV 文本..."></textarea>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
-        <button class="btn btn-primary" id="btnDoImport">导入</button>
-      </div>
-    </div>
-  </div>
 </div>
 
 <!-- Bootstrap JS -->
@@ -427,9 +357,6 @@ const state = {
     enabled_days: [1,2,3,4,5,6,7],
     timeslots: [],
     courses: []
-  },
-  profile: {
-    cell_fields: ['name','teacher','room']
   }
 };
 
@@ -437,34 +364,6 @@ const state = {
 const $  = (q,root=document)=>root.querySelector(q);
 const $$ = (q,root=document)=>Array.from(root.querySelectorAll(q));
 
-function parseCSV(text){
-  const delim = text.includes('\t') && !text.includes(',') ? '\t' : ',';
-  const rows = [];
-  let cur='', row=[], inQ=false;
-  for (let i=0;i<text.length;i++){
-    const ch=text[i], next=text[i+1];
-    if (inQ){
-      if (ch==='"' && next==='"'){ cur+='"'; i++; }
-      else if (ch==='"'){ inQ=false; }
-      else cur+=ch;
-    } else {
-      if (ch==='"') inQ=true;
-      else if (ch===delim){ row.push(cur.trim()); cur=''; }
-      else if (ch==='\n'){ row.push(cur.trim()); rows.push(row); row=[]; cur=''; }
-      else if (ch==='\r'){ /* skip */ }
-      else cur+=ch;
-    }
-  }
-  if (cur.length || row.length){ row.push(cur.trim()); rows.push(row); }
-  return rows.filter(r=>r.some(c=>c!==''));
-}
-function rowsToObjects(rows){
-  if (!rows.length) return [];
-  const header = rows[0].map(h=>h.trim().toLowerCase());
-  return rows.slice(1).map(r=>{
-    const o={}; for(let i=0;i<header.length;i++){ o[header[i]] = (r[i]??'').trim(); } return o;
-  });
-}
 function ensureInt(v,d=0){ const n=parseInt(v,10); return Number.isFinite(n)?n:d; }
 function getMaxPeriodIdx(){
   if (!state.schedule.timeslots.length) return Infinity;
@@ -592,59 +491,7 @@ function renderSettings(){
   $$('#enabled_days .day').forEach(cb=>{
     cb.checked = state.schedule.enabled_days.includes(Number(cb.value));
   });
-  const set = new Set(state.profile.cell_fields||[]);
-  $('#f_name').checked   = set.has('name');
-  $('#f_teacher').checked= set.has('teacher');
-  $('#f_room').checked   = set.has('room');
-  $('#f_weeks').checked  = set.has('weeks');
 }
-
-/* ===== 导入通用（CSV/粘贴） ===== */
-let importTarget = null; // 'course' | 'time'
-const importModal = new bootstrap.Modal($('#importModal'));
-$('#btnImportCourse').addEventListener('click', ()=>{ importTarget='course'; $('#import_file').value=''; $('#import_text').value=''; importModal.show(); });
-$('#btnPasteCourse').addEventListener('click',  ()=>{ importTarget='course'; $('#import_file').value=''; $('#import_text').value=''; importModal.show(); });
-$('#btnImportTime').addEventListener('click',   ()=>{ importTarget='time';   $('#import_file').value=''; $('#import_text').value=''; importModal.show(); });
-$('#btnPasteTime').addEventListener('click',    ()=>{ importTarget='time';   $('#import_file').value=''; $('#import_text').value=''; importModal.show(); });
-
-$('#btnDoImport').addEventListener('click', async ()=>{
-  let text = $('#import_text').value.trim();
-  const file = $('#import_file').files[0];
-  if (!text && file) text = await file.text();
-  if (!text){ alert('请先选择CSV或粘贴文本'); return; }
-
-  const rows = parseCSV(text);
-  if (!rows.length){ alert('未解析到数据'); return; }
-
-  if (importTarget === 'course'){
-    const objs = rowsToObjects(rows);
-    const out=[]; const maxIdx=getMaxPeriodIdx();
-    for(const r of objs){
-      if (!r.name) continue;
-      out.push({
-        name: r.name||'', teacher:r.teacher||'', room:r.room||'', day: ensureInt(r.day,1),
-        periods: periodsToArray(r.periods||'', maxIdx),
-        weeks: (r.weeks||'').replaceAll(' ','')||'01-16',
-        week_type: (r.week_type||'all').toLowerCase(),
-        note: r.note||''
-      });
-    }
-    if (!out.length){ alert('未解析到课程数据（需要表头 name,day,periods,weeks,week_type）'); return; }
-    state.schedule.courses = out;
-    renderCourses();
-  } else if (importTarget === 'time'){
-    const objs = rowsToObjects(rows);
-    const out=[];
-    for(const r of objs){
-      if (!r.idx && !r.start) continue;
-      out.push({idx: ensureInt(r.idx, out.length+1), start: r.start||'', end:r.end||''});
-    }
-    if (!out.length){ alert('未解析到时段数据（需要表头 idx,start,end）'); return; }
-    state.schedule.timeslots = out;
-    renderTimes();
-  }
-  importModal.hide();
-});
 
 /* ===== 载入 + 保存 ===== */
 async function loadAll(){
@@ -652,7 +499,6 @@ async function loadAll(){
   const j = await res.json().catch(()=>({ok:false,error:'加载失败'}));
   if(!j.ok){ alert(j.error||'加载失败'); return; }
   state.schedule = j.schedule || state.schedule;
-  state.profile  = j.profile  || state.profile;
 
   // 渲染三页
   renderCourses();
@@ -664,12 +510,6 @@ async function saveAll(){
   state.schedule.start_date = $('#start_date').value;
   state.schedule.tz = $('#tz').value;
   state.schedule.enabled_days = $$('#enabled_days .day:checked').map(x=>Number(x.value));
-  const fields = [];
-  if ($('#f_name').checked)    fields.push('name');
-  if ($('#f_teacher').checked) fields.push('teacher');
-  if ($('#f_room').checked)    fields.push('room');
-  if ($('#f_weeks').checked)   fields.push('weeks');
-  state.profile.cell_fields = fields.length? fields : ['name','teacher','room'];
 
   // 规范化 timeslots：按 idx 升序
   state.schedule.timeslots = state.schedule.timeslots
@@ -678,7 +518,6 @@ async function saveAll(){
 
   const fd = new FormData();
   fd.append('schedule_json', JSON.stringify(state.schedule));
-  fd.append('profile_json', JSON.stringify(state.profile));
   const res = await fetch('?api=save', {method:'POST', body:fd});
   const j = await res.json().catch(()=>({ok:false,error:'保存失败'}));
   if (!j.ok){ alert(j.error||'保存失败'); return; }
@@ -689,6 +528,8 @@ async function saveAll(){
   btn.classList.remove('btn-primary'); btn.classList.add('btn-success');
   setTimeout(()=>{ btn.textContent=old; btn.classList.add('btn-primary'); btn.classList.remove('btn-success'); }, 1500);
 }
+
+
 
 document.getElementById('btnSaveAll').addEventListener('click', saveAll);
 document.getElementById('btnSaveInTab').addEventListener('click', saveAll);

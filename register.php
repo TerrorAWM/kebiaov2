@@ -108,7 +108,7 @@ function json_out($arr, int $code = 200): void {
 function ensure_unique_user_id(PDO $pdo): int {
     do {
         $id = random_int(100000, 999999);
-        $stmt = $pdo->prepare('SELECT 1 FROM user_accounts WHERE user_id=? LIMIT 1');
+        $stmt = $pdo->prepare('SELECT 1 FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
         $stmt->execute([$id]);
         $exists = $stmt->fetchColumn();
     } while ($exists);
@@ -227,7 +227,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
             'tz_timetable' => $tz,
             'cell_fields'  => ['name','teacher','room'],
         ];
-        $stmt = $pdo->prepare('INSERT INTO user_accounts (user_id,pin,profile) VALUES (?,?,?)');
+        $stmt = $pdo->prepare('INSERT INTO ' . table('user_accounts') . ' (user_id,pin,profile) VALUES (?,?,?)');
         $stmt->execute([$user_id, $pin, json_encode($profile, JSON_UNESCAPED_UNICODE)]);
 
         $schedule = [
@@ -237,7 +237,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
             'timeslots'    => array_values($timeslots),
             'courses'      => array_values($courses),
         ];
-        $stmt2 = $pdo->prepare('INSERT INTO user_schedule (user_id, data) VALUES (?,?)');
+        $stmt2 = $pdo->prepare('INSERT INTO ' . table('user_schedule') . ' (user_id, data) VALUES (?,?)');
         $stmt2->execute([$user_id, json_encode($schedule, JSON_UNESCAPED_UNICODE)]);
 
         $pdo->commit();
@@ -273,6 +273,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
   </style>
 </head>
 <body>
+<?php include __DIR__ . '/includes/github_badge.php'; ?>
 <div class="container py-4">
   <div class="row justify-content-center">
     <div class="col-lg-10">
@@ -418,6 +419,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
     </div>
   </div>
 </div>
+
+<?php include __DIR__ . '/includes/footer.php'; ?>
 
 <!-- 仅 AI 模式使用的“处理中” Modal -->
 <div class="modal fade" id="busyModal" data-bs-backdrop="static" data-bs-keyboard="false" tabindex="-1" aria-hidden="true">
