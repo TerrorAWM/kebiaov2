@@ -4,6 +4,9 @@ declare(strict_types=1);
 mb_internal_encoding('UTF-8');
 session_start();
 
+error_reporting(E_ALL);
+ini_set('display_errors', 1);
+
 include_once __DIR__ . '/db.php';
 
 function db(): PDO {
@@ -145,7 +148,7 @@ if (isset($_GET['api'])) {
         $uid = require_login(); $payload = json_decode(file_get_contents('php://input'), true) ?: [];
         $tz = $payload['tz'] ?? '';
         if ($tz === '' || @new DateTimeZone($tz) === false) json_out(['ok'=>false,'error'=>'无效的时区'], 400);
-        $sql = "UPDATE ' . table('user_accounts') . ' SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
+        $sql = "UPDATE " . table('user_accounts') . " SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.tz_client', ?) WHERE user_id = ?";
         db()->prepare($sql)->execute([$tz, $uid]); json_out(['ok'=>true]);
     }
 
@@ -160,7 +163,7 @@ if (isset($_GET['api'])) {
         foreach ($fields as $f) if (in_array($f, $allow, true)) $clean[] = $f;
         if (empty($clean)) $clean = ['name','teacher','room'];
         $json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
-        $sql = "UPDATE ' . table('user_accounts') . ' SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.cell_fields', CAST(? AS JSON)) WHERE user_id = ?";
+        $sql = "UPDATE " . table('user_accounts') . " SET profile = JSON_SET(COALESCE(profile, JSON_OBJECT()), '$.cell_fields', ?) WHERE user_id = ?";
         db()->prepare($sql)->execute([$json, $uid]);
         json_out(['ok'=>true]);
     }
@@ -597,6 +600,8 @@ if ($logged) {
     $headerIdxs   = array_values($enabledDays);
 
     $displayFields = $profile['cell_fields'] ?? ['name','teacher','room'];
+    if (is_string($displayFields)) $displayFields = json_decode($displayFields, true) ?: [];
+    if (!is_array($displayFields)) $displayFields = ['name','teacher','room'];
     $showName   = in_array('name', $displayFields, true);
     $showTeacher= in_array('teacher', $displayFields, true);
     $showRoom   = in_array('room', $displayFields, true);
@@ -1155,6 +1160,10 @@ async function saveNote(idx, note){
 }
 
 async function saveFields(){
+  const f_name = document.getElementById('f_name');
+  const f_teacher = document.getElementById('f_teacher');
+  const f_room = document.getElementById('f_room');
+  const f_weeks = document.getElementById('f_weeks');
   const fields=[]; if(f_name.checked) fields.push('name'); if(f_teacher.checked) fields.push('teacher'); if(f_room.checked) fields.push('room'); if(f_weeks.checked) fields.push('weeks');
   try{
     const r = await fetch(buildApiUrl('set_cell_fields'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({fields})});
@@ -1232,8 +1241,12 @@ function buildCellItem(c, day){
   const wrap = document.createElement('div'); wrap.className='cell-item vstack gap-1';
   const periods = (c.periods||[]).map(x=>parseInt(x,10)).sort((a,b)=>a-b);
   const startHHMM = periodStartFromList(periods);
-  const teacherRoom = [c.teacher||'', c.room||''].filter(Boolean).join(' · ');
-  const cap = buildCapsule(day, startHHMM, c.name||'', teacherRoom, /*withMeta=*/true);
+  const teacherRoom = [
+    (DISPLAY_FIELDS.teacher ? (c.teacher||'') : ''), 
+    (DISPLAY_FIELDS.room ? (c.room||'') : '')
+  ].filter(Boolean).join(' · ');
+  const nameText = DISPLAY_FIELDS.name ? (c.name||'') : '';
+  const cap = buildCapsule(day, startHHMM, nameText, teacherRoom, /*withMeta=*/true);
   wrap.appendChild(cap);
 
   if (DISPLAY_FIELDS.weeks && c.weeks){
