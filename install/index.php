@@ -34,7 +34,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db_name = trim($_POST['db_name'] ?? '');
         $db_user = trim($_POST['db_user'] ?? '');
         $db_pass = $_POST['db_pass'] ?? '';
+        $backup_pass = trim($_POST['backup_pass'] ?? '');
         $db_prefix = trim($_POST['db_prefix'] ?? 'kb_');
+        
+        if (empty($backup_pass)) {
+            $error = '请设置备份密码';
+        } else {
+
         
         try {
             $dsn = "mysql:host={$db_host};charset=utf8mb4";
@@ -55,6 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'db_name' => $db_name,
                 'db_user' => $db_user,
                 'db_pass' => $db_pass,
+                'backup_pass' => $backup_pass,
                 'db_prefix' => $db_prefix
             ];
             
@@ -62,6 +69,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } catch (PDOException $e) {
             $error = '数据库连接失败: ' . $e->getMessage();
+        }
         }
     } elseif ($step == 2) {
         // 创建表结构
@@ -71,6 +79,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         $config = $_SESSION['install_config'];
+        $action = $_POST['action'] ?? 'install';
         
         try {
             $dsn = "mysql:host={$config['db_host']};dbname={$config['db_name']};charset=utf8mb4";
@@ -88,8 +97,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sql = str_replace("`{$table}`", "`{$prefix}{$table}`", $sql);
             }
             
-            // 执行SQL
+            // 执行建表SQL
             $pdo->exec($sql);
+            
+            // 如果是还原备份
+            if ($action === 'restore') {
+                $backup_file = $_POST['backup_file'] ?? '';
+                $restore_pass = $_POST['restore_pass'] ?? '';
+                
+                if (!file_exists($backup_file)) throw new Exception('备份文件不存在');
+                
+                // 验证密码
+                $handle = fopen($backup_file, 'r');
+                $header = fread($handle, 1024);
+                fclose($handle);
+                
+                if (!preg_match('/-- BACKUP_PASSWORD_HASH: (\S+)/', $header, $matches)) {
+                    throw new Exception('备份文件格式错误或未包含密码哈希');
+                }
+                
+                if (!password_verify($restore_pass, $matches[1])) {
+                    throw new Exception('备份密码错误');
+                }
+                
+                // 获取旧前缀
+                $old_prefix = 'kb_';
+                if (preg_match('/-- TABLE_PREFIX: (\S+)/', $header, $matches_p)) {
+                    $old_prefix = $matches_p[1];
+                }
+                
+                // 读取并执行备份数据
+                $backup_sql = file_get_contents($backup_file);
+                $backup_sql = str_replace("`{$old_prefix}", "`{$prefix}", $backup_sql);
+                $pdo->exec($backup_sql);
+            }
             
             // 生成配置文件
             $config_content = "<?php\n";
@@ -102,6 +143,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $config_content .= "define('DB_CHARSET', 'utf8mb4');\n\n";
             $config_content .= "// 安全配置\n";
             $config_content .= "define('INSTALLED', true);\n";
+            $config_content .= "define('BACKUP_PASSWORD', '" . addslashes($config['backup_pass']) . "');\n";
             
             $config_file = __DIR__ . '/../config.php';
             
@@ -118,7 +160,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: ?step=3');
             exit;
         } catch (Exception $e) {
-            $error = '安装失败: ' . $e->getMessage();
+            $error = '安装/还原失败: ' . $e->getMessage();
         }
     }
 }
@@ -299,6 +341,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <input type="password" class="form-control" name="db_pass" placeholder="如无密码则留空">
                             </div>
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label">备份密码 <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" name="backup_pass" required>
+                            <div class="form-text">用于后续备份和还原数据的密码</div>
+                        </div>
                         <div class="mb-4">
                             <label class="form-label">数据表前缀 <span class="text-danger">*</span></label>
                             <input type="text" class="form-control" name="db_prefix" value="kb_" required>
@@ -311,18 +358,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </form>
                 <?php elseif ($step == 2): ?>
-                    <h5 class="card-title mb-4"><i class="bi bi-gear"></i> 步骤 2: 安装数据表</h5>
-                    <div class="alert alert-info">
-                        <i class="bi bi-info-circle me-2"></i>
-                        点击下方按钮开始创建数据表，这可能需要几秒钟...
-                    </div>
-                    <form method="POST">
-                        <div class="d-grid">
-                            <button type="submit" class="btn btn-success btn-lg">
-                                <i class="bi bi-play-circle"></i> 开始安装
-                            </button>
+                    <h5 class="card-title mb-4"><i class="bi bi-gear"></i> 步骤 2: 安装/还原</h5>
+                    
+                    <?php 
+                    $backups = glob(__DIR__ . '/../backup/db/*.sql');
+                    if (!empty($backups)): 
+                    ?>
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white">
+                            <i class="bi bi-cloud-download"></i> 从备份还原
                         </div>
-                    </form>
+                        <div class="card-body">
+                            <form method="POST">
+                                <input type="hidden" name="action" value="restore">
+                                <div class="mb-3">
+                                    <label class="form-label">选择备份文件</label>
+                                    <select name="backup_file" class="form-select">
+                                        <?php foreach ($backups as $file): ?>
+                                            <option value="<?= htmlspecialchars($file) ?>">
+                                                <?= htmlspecialchars(basename($file)) ?> 
+                                                (<?= date('Y-m-d H:i', filemtime($file)) ?>)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">备份密码</label>
+                                    <input type="password" name="restore_pass" class="form-control" required placeholder="请输入创建备份时的密码">
+                                </div>
+                                <button type="submit" class="btn btn-warning w-100">
+                                    <i class="bi bi-arrow-counterclockwise"></i> 还原数据
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="text-center mb-3 text-muted">- 或者 -</div>
+                    <?php endif; ?>
+
+                    <div class="card border-success">
+                        <div class="card-header bg-success text-white">
+                            <i class="bi bi-stars"></i> 全新安装
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info mb-3">
+                                <i class="bi bi-info-circle me-2"></i>
+                                将创建新的空数据表。
+                            </div>
+                            <form method="POST">
+                                <input type="hidden" name="action" value="install">
+                                <button type="submit" class="btn btn-success w-100 btn-lg">
+                                    <i class="bi bi-play-circle"></i> 开始全新安装
+                                </button>
+                            </form>
+                        </div>
+                    </div>
                 <?php elseif ($step == 3): ?>
                     <div class="text-center py-5">
                         <i class="bi bi-check-circle success-icon"></i>

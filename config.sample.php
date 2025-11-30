@@ -12,3 +12,4 @@ define('DB_CHARSET', 'utf8mb4');         // 字符集
 
 // 安全配置
 define('INSTALLED', false);              // 安装完成后会自动设置为 true
+define('BACKUP_PASSWORD', '');           // 备份/还原密码
