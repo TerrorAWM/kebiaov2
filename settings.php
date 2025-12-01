@@ -129,7 +129,7 @@ if (!is_logged_in()) { header('Location: index.php'); exit; }
         <div>
           <label class="form-label">邮箱（可选）</label>
           <div class="input-group">
-            <input class="form-control" id="inp_email" placeholder="用于找回密码（暂未开放）">
+            <input class="form-control" id="inp_email" placeholder="用于找回密码">
             <button class="btn btn-outline-primary" onclick="saveEmail()">保存</button>
           </div>
         </div>
