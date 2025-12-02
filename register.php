@@ -227,8 +227,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
             'tz_timetable' => $tz,
             'cell_fields'  => ['name','teacher','room'],
         ];
-        $stmt = $pdo->prepare('INSERT INTO ' . table('user_accounts') . ' (user_id,pin,profile) VALUES (?,?,?)');
-        $stmt->execute([$user_id, $pin, json_encode($profile, JSON_UNESCAPED_UNICODE)]);
+        $stmt = $pdo->prepare('INSERT INTO ' . table('user_accounts') . ' (user_id,email,pin,profile) VALUES (?,?,?,?)');
+        $stmt->execute([$user_id, $email ?: null, $pin, json_encode($profile, JSON_UNESCAPED_UNICODE)]);
 
         $schedule = [
             'start_date'   => $start_date,

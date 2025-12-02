@@ -79,8 +79,8 @@ if (isset($_GET['api'])) {
     $uid = require_login();
     $pdo = db();
 
-    // 读取 profile
-    $stmt = $pdo->prepare('SELECT profile FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
+    // 读取 profile 和 email
+    $stmt = $pdo->prepare('SELECT email, profile FROM ' . table('user_accounts') . ' WHERE user_id=? LIMIT 1');
     $stmt->execute([$uid]);
     $acc = $stmt->fetch();
     $profile = [];
@@ -108,7 +108,25 @@ if (isset($_GET['api'])) {
       if (is_array($tmp)) $schedule = array_merge($schedule, $tmp);
     }
 
-    json_out(['ok'=>true, 'profile'=>$profile, 'schedule'=>$schedule]);
+    $email = $acc['email'] ?? '';
+    json_out(['ok'=>true, 'profile'=>$profile, 'schedule'=>$schedule, 'email'=>$email]);
+  }
+
+  // 更新邮箱
+  if ($api === 'update_email' && $_SERVER['REQUEST_METHOD']==='POST') {
+    $uid = require_login();
+    $email = trim($_POST['email'] ?? '');
+    
+    // 验证邮箱格式（允许为空）
+    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+      json_out(['ok'=>false,'error'=>'邮箱格式不正确']);
+    }
+    
+    $pdo = db();
+    $stmt = $pdo->prepare('UPDATE ' . table('user_accounts') . ' SET email=? WHERE user_id=?');
+    $stmt->execute([$email ?: null, $uid]);
+    
+    json_out(['ok'=>true]);
   }
 
   // 保存
@@ -366,6 +384,15 @@ $logged = is_logged_in();
       </div>
 
       <div class="mt-4">
+        <label class="form-label">邮箱地址（用于找回密码）</label>
+        <div class="input-group" style="max-width: 400px;">
+          <input type="email" id="user_email" class="form-control" placeholder="example@email.com">
+          <button class="btn btn-outline-secondary" id="btnUpdateEmail">更新</button>
+        </div>
+        <div class="form-text">如不需要找回功能，可留空或删除</div>
+      </div>
+
+      <div class="mt-4">
         <label class="form-label">单元格显示字段</label>
         <div class="d-flex gap-3 flex-wrap">
           <div class="form-check"><input class="form-check-input" type="checkbox" id="f_name"><label class="form-check-label" for="f_name">课程名</label></div>
@@ -430,7 +457,8 @@ const state = {
   },
   profile: {
     cell_fields: ['name','teacher','room']
-  }
+  },
+  email: ''
 };
 
 /* ===== 通用小工具 ===== */
@@ -589,6 +617,7 @@ $('#btnAddTime').addEventListener('click', ()=>{
 function renderSettings(){
   $('#start_date').value = state.schedule.start_date || '';
   $('#tz').value = state.schedule.tz || 'Asia/Shanghai';
+  $('#user_email').value = state.email || '';
   $$('#enabled_days .day').forEach(cb=>{
     cb.checked = state.schedule.enabled_days.includes(Number(cb.value));
   });
@@ -653,6 +682,7 @@ async function loadAll(){
   if(!j.ok){ alert(j.error||'加载失败'); return; }
   state.schedule = j.schedule || state.schedule;
   state.profile  = j.profile  || state.profile;
+  state.email    = j.email    || '';
 
   // 渲染三页
   renderCourses();
@@ -692,6 +722,22 @@ async function saveAll(){
 
 document.getElementById('btnSaveAll').addEventListener('click', saveAll);
 document.getElementById('btnSaveInTab').addEventListener('click', saveAll);
+
+// 更新邮箱
+document.getElementById('btnUpdateEmail').addEventListener('click', async ()=>{
+  const email = $('#user_email').value.trim();
+  const fd = new FormData();
+  fd.append('email', email);
+  const res = await fetch('?api=update_email', {method:'POST', body:fd});
+  const j = await res.json().catch(()=>({ok:false,error:'更新失败'}));
+  if (!j.ok){ alert(j.error||'更新失败'); return; }
+  state.email = email;
+  const btn = $('#btnUpdateEmail');
+  const old = btn.textContent;
+  btn.textContent = '已更新';
+  btn.classList.add('btn-success');
+  setTimeout(()=>{ btn.textContent=old; btn.classList.remove('btn-success'); }, 1500);
+});
 
 window.addEventListener('load', loadAll);
 

@@ -13,12 +13,50 @@ if (file_exists(__DIR__ . '/../config.php')) {
     if (defined('INSTALLED') && INSTALLED === true) {
         $current_step = $_GET['step'] ?? 1;
         
-        // 如果不是在第3步（完成页面），则返回404
-        if ($current_step != 3) {
+        // 如果不是在第4步（完成页面），则返回404
+        if ($current_step != 4) {
             http_response_code(404);
             exit;
         }
-        // step=3时允许显示完成页面
+        // step=4时允许显示完成页面
+    }
+}
+
+// 处理AJAX请求
+if (isset($_POST['action'])) {
+    if ($_POST['action'] === 'test_smtp') {
+        require_once __DIR__ . '/../includes/smtp.php';
+        header('Content-Type: application/json');
+        
+        $host = $_POST['smtp_host'] ?? '';
+        $port = $_POST['smtp_port'] ?? 465;
+        $user = $_POST['smtp_user'] ?? '';
+        $pass = $_POST['smtp_pass'] ?? '';
+        $to   = $_POST['to'] ?? '';
+        
+        try {
+            $smtp = new SmtpMailer($host, $port, $user, $pass);
+            $smtp->send($to, 'SMTP测试邮件', '<h1>恭喜！</h1><p>您的SMTP配置已生效。</p>');
+            echo json_encode(['ok' => true]);
+        } catch (Exception $e) {
+            echo json_encode(['ok' => false, 'error' => $e->getMessage()]);
+        }
+        exit;
+    }
+    
+    if ($_POST['action'] === 'preview_template') {
+        $tpl = $_POST['template'] ?? 'default.html';
+        $file = __DIR__ . '/../emailtemplate/' . basename($tpl);
+        if (!file_exists($file)) $file = __DIR__ . '/../emailtemplate/default.html';
+        
+        $content = file_get_contents($file);
+        // 简单的变量替换预览
+        $content = str_replace('{RESET_LINK}', 'http://example.com/reset?token=xyz', $content);
+        $content = str_replace('{YEAR}', date('Y'), $content);
+        $content = str_replace('{CONTACT_EMAIL}', 'noreply@example.com', $content);
+        
+        echo $content;
+        exit;
     }
 }
 
@@ -34,7 +72,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $db_name = trim($_POST['db_name'] ?? '');
         $db_user = trim($_POST['db_user'] ?? '');
         $db_pass = $_POST['db_pass'] ?? '';
+        $backup_pass = trim($_POST['backup_pass'] ?? '');
         $db_prefix = trim($_POST['db_prefix'] ?? 'kb_');
+        
+        if (empty($backup_pass)) {
+            $error = '请设置备份密码';
+        } else {
+
         
         try {
             $dsn = "mysql:host={$db_host};charset=utf8mb4";
@@ -55,6 +99,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'db_name' => $db_name,
                 'db_user' => $db_user,
                 'db_pass' => $db_pass,
+                'backup_pass' => $backup_pass,
                 'db_prefix' => $db_prefix
             ];
             
@@ -62,6 +107,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         } catch (PDOException $e) {
             $error = '数据库连接失败: ' . $e->getMessage();
+        }
         }
     } elseif ($step == 2) {
         // 创建表结构
@@ -71,6 +117,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         
         $config = $_SESSION['install_config'];
+        $action = $_POST['action'] ?? 'install';
         
         try {
             $dsn = "mysql:host={$config['db_host']};dbname={$config['db_name']};charset=utf8mb4";
@@ -88,37 +135,95 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $sql = str_replace("`{$table}`", "`{$prefix}{$table}`", $sql);
             }
             
-            // 执行SQL
+            // 执行建表SQL
             $pdo->exec($sql);
             
-            // 生成配置文件
-            $config_content = "<?php\n";
-            $config_content .= "// 数据库配置\n";
-            $config_content .= "define('DB_HOST', '{$config['db_host']}');\n";
-            $config_content .= "define('DB_NAME', '{$config['db_name']}');\n";
-            $config_content .= "define('DB_USER', '{$config['db_user']}');\n";
-            $config_content .= "define('DB_PASS', '" . addslashes($config['db_pass']) . "');\n";
-            $config_content .= "define('DB_PREFIX', '{$config['db_prefix']}');\n";
-            $config_content .= "define('DB_CHARSET', 'utf8mb4');\n\n";
-            $config_content .= "// 安全配置\n";
-            $config_content .= "define('INSTALLED', true);\n";
-            
-            $config_file = __DIR__ . '/../config.php';
-            
-            // 检查目录是否可写
-            if (!is_writable(dirname($config_file))) {
-                throw new Exception('目录权限不足！请确保 ' . dirname($config_file) . ' 目录可写。<br>Linux/Mac: chmod 755 ' . dirname($config_file));
+            // 如果是还原备份
+            if ($action === 'restore') {
+                $backup_file = $_POST['backup_file'] ?? '';
+                $restore_pass = $_POST['restore_pass'] ?? '';
+                
+                if (!file_exists($backup_file)) throw new Exception('备份文件不存在');
+                
+                // 验证密码
+                $handle = fopen($backup_file, 'r');
+                $header = fread($handle, 1024);
+                fclose($handle);
+                
+                if (!preg_match('/-- BACKUP_PASSWORD_HASH: (\S+)/', $header, $matches)) {
+                    throw new Exception('备份文件格式错误或未包含密码哈希');
+                }
+                
+                if (!password_verify($restore_pass, $matches[1])) {
+                    throw new Exception('备份密码错误');
+                }
+                
+                // 获取旧前缀
+                $old_prefix = 'kb_';
+                if (preg_match('/-- TABLE_PREFIX: (\S+)/', $header, $matches_p)) {
+                    $old_prefix = $matches_p[1];
+                }
+                
+                // 读取并执行备份数据
+                $backup_sql = file_get_contents($backup_file);
+                $backup_sql = str_replace("`{$old_prefix}", "`{$prefix}", $backup_sql);
+                $pdo->exec($backup_sql);
             }
             
-            // 尝试写入配置文件
-            if (file_put_contents($config_file, $config_content) === false) {
-                throw new Exception('无法写入配置文件！请检查目录权限。');
-            }
+            // 生成配置文件 (Moved to Step 3)
+            // $config_content = "<?php\n";
+            // ...
+            
+            // 暂时不写入配置文件，只更新session并跳转到Step 3
+            $_SESSION['install_config'] = $config;
             
             header('Location: ?step=3');
             exit;
         } catch (Exception $e) {
-            $error = '安装失败: ' . $e->getMessage();
+            $error = '安装/还原失败: ' . $e->getMessage();
+        }
+    } elseif ($step == 3) {
+        // 邮件配置
+        if (!isset($_SESSION['install_config'])) {
+            header('Location: ?step=1');
+            exit;
+        }
+        
+        $smtp_host = trim($_POST['smtp_host'] ?? '');
+        $smtp_port = trim($_POST['smtp_port'] ?? '');
+        $smtp_user = trim($_POST['smtp_user'] ?? '');
+        $smtp_pass = trim($_POST['smtp_pass'] ?? '');
+        $smtp_tpl  = trim($_POST['smtp_tpl'] ?? 'default.html');
+        
+        // 保存配置
+        $config = $_SESSION['install_config'];
+        
+        // 生成最终配置文件
+        $config_content = "<?php\n";
+        $config_content .= "// 数据库配置\n";
+        $config_content .= "define('DB_HOST', '{$config['db_host']}');\n";
+        $config_content .= "define('DB_NAME', '{$config['db_name']}');\n";
+        $config_content .= "define('DB_USER', '{$config['db_user']}');\n";
+        $config_content .= "define('DB_PASS', '" . addslashes($config['db_pass']) . "');\n";
+        $config_content .= "define('DB_PREFIX', '{$config['db_prefix']}');\n";
+        $config_content .= "define('DB_CHARSET', 'utf8mb4');\n\n";
+        $config_content .= "// 安全配置\n";
+        $config_content .= "define('INSTALLED', true);\n";
+        $config_content .= "define('BACKUP_PASSWORD', '" . addslashes($config['backup_pass']) . "');\n\n";
+        $config_content .= "// 邮件配置\n";
+        $config_content .= "define('SMTP_HOST', '" . addslashes($smtp_host) . "');\n";
+        $config_content .= "define('SMTP_PORT', " . intval($smtp_port) . ");\n";
+        $config_content .= "define('SMTP_USER', '" . addslashes($smtp_user) . "');\n";
+        $config_content .= "define('SMTP_PASS', '" . addslashes($smtp_pass) . "');\n";
+        $config_content .= "define('SMTP_TEMPLATE', '" . addslashes($smtp_tpl) . "');\n";
+        
+        $config_file = __DIR__ . '/../config.php';
+        
+        if (file_put_contents($config_file, $config_content) === false) {
+            $error = '无法写入配置文件！请检查目录权限。';
+        } else {
+            header('Location: ?step=4');
+            exit;
         }
     }
 }
@@ -250,8 +355,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     </div>
                     <div class="step-label">安装数据表</div>
                 </div>
-                <div class="step <?= $step >= 3 ? 'active' : '' ?>">
-                    <div class="step-circle">3</div>
+                <div class="step <?= $step >= 3 ? 'active' : '' ?> <?= $step > 3 ? 'completed' : '' ?>">
+                    <div class="step-circle">
+                        <?php if ($step > 3): ?>
+                            <i class="bi bi-check-lg"></i>
+                        <?php else: ?>
+                            3
+                        <?php endif; ?>
+                    </div>
+                    <div class="step-label">邮件配置</div>
+                </div>
+                <div class="step <?= $step >= 4 ? 'active' : '' ?>">
+                    <div class="step-circle">4</div>
                     <div class="step-label">完成</div>
                 </div>
             </div>
@@ -299,6 +414,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 <input type="password" class="form-control" name="db_pass" placeholder="如无密码则留空">
                             </div>
                         </div>
+                        <div class="mb-3">
+                            <label class="form-label">备份密码 <span class="text-danger">*</span></label>
+                            <input type="text" class="form-control" name="backup_pass" required>
+                            <div class="form-text">用于后续备份和还原数据的密码</div>
+                        </div>
                         <div class="mb-4">
                             <label class="form-label">数据表前缀 <span class="text-danger">*</span></label>
                             <input type="text" class="form-control" name="db_prefix" value="kb_" required>
@@ -311,19 +431,142 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         </div>
                     </form>
                 <?php elseif ($step == 2): ?>
-                    <h5 class="card-title mb-4"><i class="bi bi-gear"></i> 步骤 2: 安装数据表</h5>
-                    <div class="alert alert-info">
-                        <i class="bi bi-info-circle me-2"></i>
-                        点击下方按钮开始创建数据表，这可能需要几秒钟...
+                    <h5 class="card-title mb-4"><i class="bi bi-gear"></i> 步骤 2: 安装/还原</h5>
+                    
+                    <?php 
+                    $backups = glob(__DIR__ . '/../backup/db/*.sql');
+                    if (!empty($backups)): 
+                    ?>
+                    <div class="card mb-4 border-primary">
+                        <div class="card-header bg-primary text-white">
+                            <i class="bi bi-cloud-download"></i> 从备份还原
+                        </div>
+                        <div class="card-body">
+                            <form method="POST">
+                                <input type="hidden" name="action" value="restore">
+                                <div class="mb-3">
+                                    <label class="form-label">选择备份文件</label>
+                                    <select name="backup_file" class="form-select">
+                                        <?php foreach ($backups as $file): ?>
+                                            <option value="<?= htmlspecialchars($file) ?>">
+                                                <?= htmlspecialchars(basename($file)) ?> 
+                                                (<?= date('Y-m-d H:i', filemtime($file)) ?>)
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">备份密码</label>
+                                    <input type="password" name="restore_pass" class="form-control" required placeholder="请输入创建备份时的密码">
+                                </div>
+                                <button type="submit" class="btn btn-warning w-100">
+                                    <i class="bi bi-arrow-counterclockwise"></i> 还原数据
+                                </button>
+                            </form>
+                        </div>
                     </div>
-                    <form method="POST">
+                    <div class="text-center mb-3 text-muted">- 或者 -</div>
+                    <?php endif; ?>
+
+                    <div class="card border-success">
+                        <div class="card-header bg-success text-white">
+                            <i class="bi bi-stars"></i> 全新安装
+                        </div>
+                        <div class="card-body">
+                            <div class="alert alert-info mb-3">
+                                <i class="bi bi-info-circle me-2"></i>
+                                将创建新的空数据表。
+                            </div>
+                            <form method="POST">
+                                <input type="hidden" name="action" value="install">
+                                <button type="submit" class="btn btn-success w-100 btn-lg">
+                                    <i class="bi bi-play-circle"></i> 开始全新安装
+                                </button>
+                            </form>
+                        </div>
+                    </div>
+                <?php elseif ($step == 3): ?>
+                    <h5 class="card-title mb-4"><i class="bi bi-envelope-at"></i> 步骤 3: 邮件配置</h5>
+                    
+                    <form method="POST" id="smtpForm">
+                        <div class="mb-3">
+                            <label class="form-label">快速预设</label>
+                            <select class="form-select" id="smtpPreset" onchange="applyPreset()">
+                                <option value="custom">自定义</option>
+                                <option value="gmail">Gmail</option>
+                                <option value="outlook">Outlook / Office 365</option>
+                                <option value="qq">QQ 邮箱</option>
+                            </select>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-8 mb-3">
+                                <label class="form-label">SMTP 服务器 <span class="text-danger">*</span></label>
+                                <input type="text" class="form-control" name="smtp_host" id="smtp_host" required>
+                            </div>
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">端口 <span class="text-danger">*</span></label>
+                                <input type="number" class="form-control" name="smtp_port" id="smtp_port" value="465" required>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">邮箱账号 <span class="text-danger">*</span></label>
+                                <input type="email" class="form-control" name="smtp_user" id="smtp_user" required>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">邮箱密码/授权码 <span class="text-danger">*</span></label>
+                                <input type="password" class="form-control" name="smtp_pass" id="smtp_pass" required>
+                            </div>
+                        </div>
+                        
+                        <div class="mb-4">
+                            <label class="form-label">测试收件人</label>
+                            <div class="input-group">
+                                <input type="email" class="form-control" id="test_email" placeholder="输入接收测试邮件的邮箱">
+                                <button type="button" class="btn btn-outline-secondary" onclick="testSmtp()" id="btnTest">
+                                    <i class="bi bi-send"></i> 测试连接
+                                </button>
+                            </div>
+                            <div class="form-text text-muted" id="testResult"></div>
+                        </div>
+                        
+                        <hr>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">邮件模版</label>
+                            <div class="row">
+                                <div class="col-md-4">
+                                    <select class="form-select mb-2" name="smtp_tpl" id="smtp_tpl" onchange="previewTemplate()">
+                                        <?php
+                                        $tpls = glob(__DIR__ . '/../emailtemplate/*.html');
+                                        foreach ($tpls as $t) {
+                                            $name = basename($t);
+                                            echo "<option value='{$name}'>{$name}</option>";
+                                        }
+                                        ?>
+                                    </select>
+                                </div>
+                                <div class="col-md-8">
+                                    <div class="border rounded p-2 bg-light" style="height: 300px; overflow-y: auto;">
+                                        <iframe id="tplPreview" style="width: 100%; height: 100%; border: none;"></iframe>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="d-grid">
-                            <button type="submit" class="btn btn-success btn-lg">
-                                <i class="bi bi-play-circle"></i> 开始安装
+                            <button type="submit" class="btn btn-primary btn-lg" id="btnNext" disabled>
+                                <i class="bi bi-arrow-right-circle"></i> 完成安装
                             </button>
+                            <div class="form-text text-center mt-2 text-danger" id="blockMsg">
+                                请先通过连接测试才能继续
+                            </div>
                         </div>
                     </form>
-                <?php elseif ($step == 3): ?>
+
+                <?php elseif ($step == 4): ?>
                     <div class="text-center py-5">
                         <i class="bi bi-check-circle success-icon"></i>
                         <h4 class="text-success mt-3 mb-2">安装成功！</h4>
@@ -333,6 +576,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             <h6 class="alert-heading"><i class="bi bi-check2-square"></i> 安装完成清单</h6>
                             <ul class="mb-0 small">
                                 <li>✓ 数据库表已创建</li>
+                                <li>✓ 邮件服务已配置</li>
                                 <li>✓ 配置文件已生成</li>
                                 <li>✓ 系统已锁定（install目录已禁用访问）</li>
                             </ul>
@@ -364,5 +608,91 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    function applyPreset() {
+        const v = document.getElementById('smtpPreset').value;
+        const host = document.getElementById('smtp_host');
+        const port = document.getElementById('smtp_port');
+        
+        if (v === 'gmail') {
+            host.value = 'smtp.gmail.com';
+            port.value = '587';
+        } else if (v === 'outlook') {
+            host.value = 'smtp.office365.com';
+            port.value = '587';
+        } else if (v === 'qq') {
+            host.value = 'smtp.qq.com';
+            port.value = '465';
+        } else {
+            host.value = '';
+            port.value = '465';
+        }
+    }
+
+    function previewTemplate() {
+        const tpl = document.getElementById('smtp_tpl').value;
+        const fd = new FormData();
+        fd.append('action', 'preview_template');
+        fd.append('template', tpl);
+        
+        fetch('', { method: 'POST', body: fd })
+            .then(r => r.text())
+            .then(html => {
+                const iframe = document.getElementById('tplPreview');
+                iframe.contentDocument.open();
+                iframe.contentDocument.write(html);
+                iframe.contentDocument.close();
+            });
+    }
+
+    function testSmtp() {
+        const btn = document.getElementById('btnTest');
+        const res = document.getElementById('testResult');
+        const next = document.getElementById('btnNext');
+        const block = document.getElementById('blockMsg');
+        const email = document.getElementById('test_email').value;
+        
+        if (!email) { alert('请输入测试邮箱'); return; }
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> 测试中...';
+        res.innerHTML = '';
+        res.className = 'form-text text-muted';
+        
+        const fd = new FormData(document.getElementById('smtpForm'));
+        fd.append('action', 'test_smtp');
+        fd.append('to', email);
+        
+        fetch('', { method: 'POST', body: fd })
+            .then(r => r.json())
+            .then(j => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-send"></i> 测试连接';
+                
+                if (j.ok) {
+                    res.innerHTML = '<i class="bi bi-check-circle-fill"></i> 连接成功！邮件已发送。';
+                    res.className = 'form-text text-success';
+                    next.disabled = false;
+                    block.style.display = 'none';
+                } else {
+                    res.innerHTML = '<i class="bi bi-x-circle-fill"></i> 连接失败: ' + j.error;
+                    res.className = 'form-text text-danger';
+                    next.disabled = true;
+                    block.style.display = 'block';
+                }
+            })
+            .catch(e => {
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-send"></i> 测试连接';
+                res.innerHTML = '请求失败';
+                res.className = 'form-text text-danger';
+            });
+    }
+    
+    // Init preview
+    if (document.getElementById('smtp_tpl')) {
+        previewTemplate();
+    }
+    </script>
 </body>
 </html>

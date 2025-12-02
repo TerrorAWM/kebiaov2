@@ -67,6 +67,7 @@ CREATE TABLE `shared_links` (
 
 CREATE TABLE `user_accounts` (
   `user_id` int(10) UNSIGNED NOT NULL,
+  `email` varchar(255) DEFAULT NULL,
   `pin` char(4) NOT NULL,
   `profile` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`profile`)),
   `created_at` timestamp NOT NULL DEFAULT current_timestamp()
@@ -97,6 +98,19 @@ CREATE TABLE `user_schedule` (
   `updated_at` timestamp NOT NULL DEFAULT current_timestamp() ON UPDATE current_timestamp()
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+-- --------------------------------------------------------
+
+--
+-- 表的结构 `password_resets`
+--
+
+CREATE TABLE `password_resets` (
+  `id` bigint(20) UNSIGNED NOT NULL,
+  `user_id` int(10) UNSIGNED NOT NULL,
+  `token` varchar(64) NOT NULL,
+  `created_at` timestamp NOT NULL DEFAULT current_timestamp()
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
 --
 -- 转储表的索引
 --
@@ -121,7 +135,8 @@ ALTER TABLE `shared_links`
 -- 表的索引 `user_accounts`
 --
 ALTER TABLE `user_accounts`
-  ADD PRIMARY KEY (`user_id`);
+  ADD PRIMARY KEY (`user_id`),
+  ADD KEY `idx_email` (`email`);
 
 --
 -- 表的索引 `user_lab_schedule`
@@ -134,6 +149,14 @@ ALTER TABLE `user_lab_schedule`
 --
 ALTER TABLE `user_schedule`
   ADD PRIMARY KEY (`user_id`);
+
+--
+-- 表的索引 `password_resets`
+--
+ALTER TABLE `password_resets`
+  ADD PRIMARY KEY (`id`),
+  ADD KEY `idx_token` (`token`),
+  ADD KEY `idx_user` (`user_id`);
 
 --
 -- 在导出的表使用AUTO_INCREMENT
@@ -149,6 +172,12 @@ ALTER TABLE `lab_uploads`
 -- 使用表AUTO_INCREMENT `shared_links`
 --
 ALTER TABLE `shared_links`
+  MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
+
+--
+-- 使用表AUTO_INCREMENT `password_resets`
+--
+ALTER TABLE `password_resets`
   MODIFY `id` bigint(20) UNSIGNED NOT NULL AUTO_INCREMENT;
 
 --

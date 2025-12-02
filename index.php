@@ -596,6 +596,9 @@ if ($logged) {
             </div>
             <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">登录</button>
             <a href="register.php" class="btn btn-outline-secondary w-100 mt-2">去注册</a>
+            <div class="text-center mt-2">
+                <a href="findaccount.php" class="text-decoration-none small">忘记账号？找回</a>
+            </div>
           </form>
         </div>
       </div>

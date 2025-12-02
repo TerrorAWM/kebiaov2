@@ -12,3 +12,12 @@ define('DB_CHARSET', 'utf8mb4');         // 字符集
 
 // 安全配置
 define('INSTALLED', false);              // 安装完成后会自动设置为 true
+define('BACKUP_PASSWORD', '');           // 备份/还原密码
+
+// 邮件配置
+define('SMTP_HOST', '');                 // SMTP服务器
+define('SMTP_PORT', 465);                // SMTP端口 (465/587)
+define('SMTP_USER', '');                 // SMTP账号
+define('SMTP_PASS', '');                 // SMTP密码
+define('SMTP_TEMPLATE', 'default.html'); // 邮件模版
+
