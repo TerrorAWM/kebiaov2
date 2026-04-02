@@ -5,6 +5,7 @@ declare(strict_types=1);
 mb_internal_encoding('UTF-8');
 
 include_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 
 function db(): PDO {
     static $pdo = null;
@@ -298,6 +299,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>共享课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <link rel="stylesheet" href="./assets/fontawesome/css/all.min.css">
@@ -383,7 +385,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     th.sticky-col .slot-mobile .slot-index{
       font-size:15px;
       font-weight:700;
-      color:#000;
+      color: var(--bs-body-color);
     }
     th.sticky-col .slot-mobile .slot-time{
       font-size:12px;
@@ -422,6 +424,12 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     }
     .cell .capsule .cap-text{
       font-weight:500;
+    }
+    .cell .meta.text-truncate{
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+      line-height: 1.15;
     }
   }
 </style>
@@ -694,7 +702,15 @@ function clampName(s, n=NAME_MAX){
 }
 function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h)+str.charCodeAt(i); h|=0; } return h>>>0; }
 function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
-function colorFromSeed(seed){ const hv=djb2(String(seed)); const h=hv%360; return { bg:hsl(h,70,92), bd:hsl(h,65,55) }; }
+function colorFromSeed(seed){
+  const hv=djb2(String(seed)); const h=hv%360;
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  const sBg = isDark ? 65 : 70;
+  const lBg = isDark ? 70 : 92;
+  const sBd = isDark ? 65 : 65;
+  const lBd = isDark ? 70 : 55;
+  return { bg:hsl(h,sBg,lBg), bd:hsl(h,sBd,lBd) };
+}
 function buildCapsule(day, startHHMM, text, metaText, withMeta){
   const seed = `${USER_ID}|${day}|${startHHMM||''}`;
   const color = colorFromSeed(seed);
@@ -733,7 +749,7 @@ function buildCellItem(c, day){
   wrap.appendChild(cap);
   if (DISPLAY_FIELDS.weeks && c.weeks){
     const metaWeeks = document.createElement('div'); metaWeeks.className='meta text-truncate';
-    metaWeeks.textContent = '周: ' + String(c.weeks);
+    metaWeeks.textContent = '周: ' + String(c.weeks).replace(/,/g, ',\u200b');
     wrap.appendChild(metaWeeks);
   }
   return wrap;
@@ -914,18 +930,27 @@ function initWeekNav(){
   });
 }
 
-(function initCells(){
-  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+function paintStaticCapsules(){
   document.querySelectorAll('[data-capsule]').forEach(el=>{
     const day = parseInt(el.getAttribute('data-day')||'0',10);
     const st  = el.getAttribute('data-start') || '';
     const color = colorFromSeed(`${USER_ID}|${day}|${st}`);
     el.style.setProperty('--cap-bg', color.bg);
     el.style.setProperty('--cap-bd', color.bd);
-    const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
+    const t = el.querySelector('.cap-text');
+    if (t){ t.textContent = clampName(t.textContent || ''); }
   });
+}
+
+(function initCells(){
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
   initWeekNav();
 })();
+window.addEventListener('kb-theme-change', ()=>{
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
+});
 
 /* ===== 实时高亮（计算时区固定为课表时区） ===== */
 const CALC_TZ  = "<?= h($tzTimetable) ?>";
@@ -985,6 +1010,7 @@ function findNext(dayToday, hhmm, slots){
   tick(); setInterval(tick, 1000);
 })();
 </script>
+<?php theme_controls_script(); ?>
 <?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

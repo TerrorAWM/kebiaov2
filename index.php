@@ -6,6 +6,7 @@ session_start();
 
 
 include_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 
 function db(): PDO {
     static $pdo = null;
@@ -495,6 +496,7 @@ if ($logged) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>我的课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
@@ -607,7 +609,7 @@ if ($logged) {
     th.sticky-col .slot-mobile .slot-index{
       font-size:15px;
       font-weight:700;
-      color:#000;
+      color: var(--bs-body-color);
     }
     th.sticky-col .slot-mobile .slot-time{
       font-size:12px;
@@ -646,6 +648,12 @@ if ($logged) {
     }
     .cell .capsule .cap-text{
       font-weight:500;
+    }
+    .cell .meta.text-truncate{
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+      line-height: 1.15;
     }
   }
 
@@ -765,6 +773,7 @@ if ($logged) {
     </div>
     <div class="d-flex align-items-center gap-2">
       <?php include __DIR__ . '/includes/github_badge.php'; ?>
+      <?php theme_selector_control(); ?>
       <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
       <?php if ($LOGIN_MODE === 'session'): ?>
         <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
@@ -1040,15 +1049,19 @@ if ($logged) {
 <!-- ======= 左侧：分享 & 实验课表 圆形按钮 ======= -->
 <?php if ($logged): ?>
   <?php if ($LOGIN_MODE === 'session'): ?>
-    <?php $shareStyle = $hasLab ? '' : 'style="bottom: 24px;"'; ?>
-    <button class="fab fab-share" id="fabShare" title="分享课表" <?= $shareStyle ?>>
+    <?php
+      $shareBottomPx = $hasLab ? 96 : 24;
+      $shareDropGapPx = 12;
+      $shareDropBottomPx = $shareBottomPx + 56 + $shareDropGapPx;
+    ?>
+    <button class="fab fab-share" id="fabShare" title="分享课表" style="bottom: <?= (int)$shareBottomPx ?>px;">
       <!-- share icon -->
       <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a2.5 2.5 0 1 0 1.983 4.09l-7.518 4.01a2.5 2.5 0 1 0 0 1.8l7.518 4.01A2.5 2.5 0 1 0 13.5 15a2.48 2.48 0 0 0 1.37-.418l-7.52-4.01a2.5 2.5 0 0 0 0-1.145l7.52-4.01A2.48 2.48 0 0 0 13.5 1z"/></svg> -->
       <i class="fa-solid fa-share"></i>
         <!-- <i class="fa-solid fa-user"></i> -->
 
     </button>
-    <div class="share-dropup shadow" id="shareDropup">
+    <div class="share-dropup shadow" id="shareDropup" style="bottom: <?= (int)$shareDropBottomPx ?>px;">
       <div class="vstack gap-2">
         <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#shareCreateModal" onclick="hideShareDropup()">创建链接</button>
         <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareManageModal" onclick="hideShareDropup()">管理链接</button>
@@ -1442,7 +1455,7 @@ function buildCellItem(c, day){
 
   if (DISPLAY_FIELDS.weeks && c.weeks){
     const metaWeeks = document.createElement('div'); metaWeeks.className='meta text-truncate';
-    metaWeeks.textContent = '周: ' + String(c.weeks);
+    metaWeeks.textContent = '周: ' + String(c.weeks).replace(/,/g, ',\u200b');
     wrap.appendChild(metaWeeks);
   }
   return wrap;
@@ -1639,18 +1652,27 @@ function initWeekNav(){
   nextBtn?.addEventListener('click', ()=> moveWeek(+1));
 }
 
-(function initCells(){
-  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+function paintStaticCapsules(){
   document.querySelectorAll('[data-capsule]').forEach(el=>{
     const day = parseInt(el.getAttribute('data-day')||'0',10);
     const st  = el.getAttribute('data-start') || '';
     const color = colorFromSeed(`${USER_ID}|${day}|${st}`);
     el.style.setProperty('--cap-bg', color.bg);
     el.style.setProperty('--cap-bd', color.bd);
-    const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
+    const t = el.querySelector('.cap-text');
+    if (t){ t.textContent = clampName(t.textContent || ''); }
   });
+}
+
+(function initCells(){
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
   initWeekNav();
 })();
+window.addEventListener('kb-theme-change', ()=>{
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
+});
 
 /* ===== 实时高亮：当前（绿） + 下一节（黄）；跨天回滚 ===== */
 const CALC_TZ  = "<?=h($calcTz)?>";
@@ -1728,7 +1750,11 @@ function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h) + s
 function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
 function colorFromSeed(seed){
   const hv = djb2(String(seed)); const h = hv % 360;
-  const sBg=70, lBg=92, sBd=65, lBd=55;
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  const sBg = isDark ? 65 : 70;
+  const lBg = isDark ? 70 : 92;
+  const sBd = isDark ? 65 : 65;
+  const lBd = isDark ? 70 : 55;
   return { bg: hsl(h, sBg, lBg), bd: hsl(h, sBd, lBd) };
 }
 
@@ -2146,6 +2172,7 @@ async function createShareLink(){
     }
   });
 </script>
+<?php theme_controls_script(); ?>
 <?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

@@ -5,6 +5,7 @@ mb_internal_encoding('UTF-8');
 session_start();
 
 include_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 
 function db(): PDO {
     static $pdo = null;
@@ -484,6 +485,7 @@ if ($logged) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>我的实验课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
@@ -596,7 +598,7 @@ if ($logged) {
     th.sticky-col .slot-mobile .slot-index{
       font-size:15px;
       font-weight:700;
-      color:#000;
+      color: var(--bs-body-color);
     }
     th.sticky-col .slot-mobile .slot-time{
       font-size:12px;
@@ -635,6 +637,12 @@ if ($logged) {
     }
     .cell .capsule .cap-text{
       font-weight:500;
+    }
+    .cell .meta.text-truncate{
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+      line-height: 1.15;
     }
   }
 
@@ -750,6 +758,7 @@ if ($logged) {
     </div>
     <div class="d-flex align-items-center gap-2">
       <?php include __DIR__ . '/includes/github_badge.php'; ?>
+      <?php theme_selector_control(); ?>
       <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
       <?php if ($LOGIN_MODE === 'session'): ?>
         <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
@@ -1398,7 +1407,7 @@ function buildCellItem(c, day){
 
   if (DISPLAY_FIELDS.weeks && c.weeks){
     const metaWeeks = document.createElement('div'); metaWeeks.className='meta text-truncate';
-    metaWeeks.textContent = '周: ' + String(c.weeks);
+    metaWeeks.textContent = '周: ' + String(c.weeks).replace(/,/g, ',\u200b');
     wrap.appendChild(metaWeeks);
   }
   return wrap;
@@ -1595,18 +1604,27 @@ function initWeekNav(){
   nextBtn?.addEventListener('click', ()=> moveWeek(+1));
 }
 
-(function initCells(){
-  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+function paintStaticCapsules(){
   document.querySelectorAll('[data-capsule]').forEach(el=>{
     const day = parseInt(el.getAttribute('data-day')||'0',10);
     const st  = el.getAttribute('data-start') || '';
     const color = colorFromSeed(`${USER_ID}|${day}|${st}`);
     el.style.setProperty('--cap-bg', color.bg);
     el.style.setProperty('--cap-bd', color.bd);
-    const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
+    const t = el.querySelector('.cap-text');
+    if (t){ t.textContent = clampName(t.textContent || ''); }
   });
+}
+
+(function initCells(){
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
   initWeekNav();
 })();
+window.addEventListener('kb-theme-change', ()=>{
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
+});
 
 /* ===== 实时高亮：当前（绿） + 下一节（黄）；跨天回滚 ===== */
 const CALC_TZ  = "<?=h($calcTz)?>";
@@ -1684,7 +1702,11 @@ function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h) + s
 function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
 function colorFromSeed(seed){
   const hv = djb2(String(seed)); const h = hv % 360;
-  const sBg=70, lBg=92, sBd=65, lBd=55;
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  const sBg = isDark ? 65 : 70;
+  const lBg = isDark ? 70 : 92;
+  const sBd = isDark ? 65 : 65;
+  const lBd = isDark ? 70 : 55;
   return { bg: hsl(h, sBg, lBg), bd: hsl(h, sBd, lBd) };
 }
 
@@ -2093,6 +2115,7 @@ async function createShareLink(){
     }
   });
 </script>
+<?php theme_controls_script(); ?>
 <?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

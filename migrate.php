@@ -2,6 +2,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 session_start();
 
 function h(string $s): string {
@@ -253,6 +254,7 @@ $hasMissingAfter = ($missingTableCountAfter + $missingColumnCountAfter) > 0;
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <?php theme_head_script(); ?>
   <title>数据库迁移检测</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <style>
@@ -410,5 +412,6 @@ $hasMissingAfter = ($missingTableCountAfter + $missingColumnCountAfter) > 0;
     <?php endif; ?>
   <?php endif; ?>
 </div>
+<?php theme_controls_script(); ?>
 </body>
 </html>

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 mb_internal_encoding('UTF-8');
 session_start();
+require_once __DIR__ . '/includes/theme.php';
 
 /* ===== 公共工具 ===== */
 function h(?string $s): string { return htmlspecialchars($s ?? '', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'); }
@@ -176,6 +177,7 @@ $logged = is_logged_in();
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>编辑实验课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
@@ -538,5 +540,6 @@ window.addEventListener('load', loadAll);
 
 <?php endif; ?>
 </script>
+<?php theme_controls_script(); ?>
 </body>
 </html>

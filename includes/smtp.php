@@ -1,6 +1,5 @@
 <?php
 /**
- * Simple SMTP Client for mail.ricardozheng.com
  * 支持：
  *  - 465 端口 SMTPS（SSL）
  *  - 587 端口 STARTTLS
