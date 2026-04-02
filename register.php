@@ -10,6 +10,7 @@
 declare(strict_types=1);
 mb_internal_encoding('UTF-8');
 session_start();
+require_once __DIR__ . '/includes/theme.php';
 
 /* ================= DeepSeek 配置（同页内置，已含重试与超时） ================= */
 const DS_API_BASE      = 'https://api.deepseek.com';
@@ -255,6 +256,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <?php theme_head_script(); ?>
   <title>注册课表</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"/>
   <style>
@@ -270,6 +272,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'regis
     .dot{display:inline-block;width:.45em;height:.45em;background:#6b7280;border-radius:50%;margin-left:.2em;opacity:0;animation:blink 1s infinite}
     .dot1{animation-delay:0s}.dot2{animation-delay:.2s}.dot3{animation-delay:.4s}
     @keyframes blink{0%{opacity:0}50%{opacity:1}100%{opacity:0}}
+    html[data-bs-theme="dark"] #review{
+      background:#2d333b !important;
+      border-color:#444c56 !important;
+      color:#adbac7 !important;
+    }
+    html[data-bs-theme="dark"] #review b{
+      color:#cdd9e5;
+    }
+    html[data-bs-theme="dark"] #review .text-warning{
+      color:#d29922 !important;
+    }
+    html[data-bs-theme="dark"] #review .text-danger{
+      color:#f47067 !important;
+    }
   </style>
 </head>
 <body>
@@ -1441,5 +1457,6 @@ window.addEventListener('load', populateTimezones);
 $('#tz')?.addEventListener('change', e => { state.tz = e.target.value; });
 
 </script>
+<?php theme_controls_script(); ?>
 </body>
 </html>

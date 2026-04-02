@@ -6,6 +6,7 @@ session_start();
 
 
 include_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 
 function db(): PDO {
     static $pdo = null;
@@ -87,6 +88,14 @@ function calc_week_no(DateTime $now, string $startDateYmd, string $tz): int {
     $diffDays = (int)$start->diff($now2)->format('%r%a'); if ($diffDays < 0) return 0; return (int)floor($diffDays / 7) + 1;
 }
 
+function calc_week_range(string $startDateYmd, int $weekNo, string $tz): array {
+    $base = new DateTime($startDateYmd . ' 00:00:00', new DateTimeZone($tz));
+    $offsetWeeks = ($weekNo <= 0) ? -1 : ($weekNo - 1);
+    $weekStart = (clone $base)->modify(($offsetWeeks * 7) . ' days');
+    $weekEnd = (clone $weekStart)->modify('+6 days');
+    return [$weekStart, $weekEnd];
+}
+
 /* ========= 分享功能后端：工具函数 ========= */
 function share_require_owner(): int {
     if (auth_mode() !== 'session') json_out(['ok'=>false,'error'=>'需要正常登录（非链接登录）以管理/创建分享链接'], 403);
@@ -123,6 +132,18 @@ function get_share_limit(?int $uid): ?int {
         if (is_int($val) && $val > 0) $limit = $val;
     }
     return $limit;
+}
+
+function shared_links_support_week_nav(): bool {
+    static $supported = null;
+    if ($supported !== null) return $supported;
+    try {
+        db()->query('SELECT allow_week_nav FROM ' . table('shared_links') . ' LIMIT 1');
+        $supported = true;
+    } catch (Throwable $e) {
+        $supported = false;
+    }
+    return $supported;
 }
 
 /* ================== API 区 ================== */
@@ -242,6 +263,7 @@ if (isset($_GET['api'])) {
         foreach ($fields as $f) if (in_array($f, $allow, true)) $clean[] = $f;
         if (empty($clean)) $clean = ['name','teacher','room'];
         $display_fields_json = json_encode(array_values(array_unique($clean)), JSON_UNESCAPED_UNICODE);
+        $allow_week_nav = !empty($payload['allow_week_nav']) ? 1 : 0;
 
         // 课表范围
         $scope_arr = $payload['scope'] ?? ['main'];
@@ -255,8 +277,13 @@ if (isset($_GET['api'])) {
         $token = generate_token();
         $share_pass = generate_share_pass($uid);
 
-        $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
-        $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
+        if (shared_links_support_week_nav()) {
+            $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, allow_week_nav, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)');
+            $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $allow_week_nav, $max_visits, $expires_at]);
+        } else {
+            $ins = db()->prepare('INSERT INTO ' . table('shared_links') . '(user_id, token, share_pass, scope, tz_mode, tz_value, display_fields, max_visits, expires_at) VALUES(?,?,?,?,?,?,?,?,?)');
+            $ins->execute([$uid, $token, $share_pass, $scope_value, $tz_mode, $tz_value, $display_fields_json, $max_visits, $expires_at]);
+        }
 
         $url = base_url().'/share_kb.php?token='.rawurlencode($token).'&pass='.rawurlencode($share_pass);
         json_out(['ok'=>true, 'url'=>$url, 'token'=>$token, 'pass'=>$share_pass]);
@@ -264,7 +291,10 @@ if (isset($_GET['api'])) {
 
     if ($api === 'share_list') {
         $uid = share_require_owner();
-        $rows = db()->prepare('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC');
+        $sqlShareList = shared_links_support_week_nav()
+            ? ('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields, allow_week_nav FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC')
+            : ('SELECT id, token, share_pass, scope, tz_mode, tz_value, max_visits, visit_count, expires_at, disabled, created_at, display_fields FROM ' . table('shared_links') . ' WHERE user_id=? ORDER BY id DESC');
+        $rows = db()->prepare($sqlShareList);
         $rows->execute([$uid]);
         $out = [];
         while ($r = $rows->fetch()) {
@@ -289,10 +319,29 @@ if (isset($_GET['api'])) {
                 'disabled' => (int)$r['disabled'] === 1,
                 'created_at' => $r['created_at'],
                 'display_fields' => json_decode($r['display_fields'] ?? '[]', true) ?: [],
+                'allow_week_nav' => (int)($r['allow_week_nav'] ?? 0) === 1 ? 1 : 0,
             ];
         }
         $limit = get_share_limit($uid);
         json_out(['ok'=>true, 'list'=>$out, 'limit'=>$limit]);
+    }
+
+    if ($api === 'share_update' && $_SERVER['REQUEST_METHOD'] === 'POST') {
+        $uid = share_require_owner();
+        if (!shared_links_support_week_nav()) {
+            json_out(['ok'=>false,'error'=>'请先运行 migrate.php 升级数据库后再修改跨周权限'], 400);
+        }
+        $payload = json_decode(file_get_contents('php://input'), true) ?: [];
+        $id = (int)($payload['id'] ?? 0);
+        if ($id <= 0) json_out(['ok'=>false,'error'=>'无效的链接ID'], 400);
+        $allow_week_nav = !empty($payload['allow_week_nav']) ? 1 : 0;
+
+        $chk = db()->prepare('SELECT id FROM ' . table('shared_links') . ' WHERE id=? AND user_id=?');
+        $chk->execute([$id, $uid]);
+        if (!$chk->fetch()) json_out(['ok'=>false,'error'=>'记录不存在或无权操作'], 404);
+
+        db()->prepare('UPDATE ' . table('shared_links') . ' SET allow_week_nav=? WHERE id=?')->execute([$allow_week_nav, $id]);
+        json_out(['ok'=>true]);
     }
 
     if ($api === 'share_delete' && $_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -327,6 +376,7 @@ $enabledDays = [1,2,3,4,5,6,7];
 $timeslots = [];
 $courses   = [];
 $startDate = null;
+$weekNo = 0;
 $showAllParam = isset($_GET['all']) ? (bool)$_GET['all'] : false;
 
 // 高亮集合（首屏渲染用；前端仍会实时更新）
@@ -446,6 +496,7 @@ if ($logged) {
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>我的课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <!-- <link href="./assets/fontawesome-pp7.1.0/css/all.min.css">
@@ -476,9 +527,16 @@ if ($logged) {
   .card { border-radius: 1rem; }
   .sticky-col { position: sticky; left: 0; z-index: 2; background: #fff; white-space: nowrap; }
   .sticky-col .fw-semibold{ white-space: nowrap; }
+  .slot-desktop{ display:flex; flex-direction:column; align-items:flex-start; }
+  .slot-mobile{ display:none; }
   .slot-badge { font-size: .75rem; }
   .cell { min-width: 140px; }
-  @media (max-width: 576px){ .cell{ min-width: 120px; } }
+  .table.table-bordered.align-middle.table-sm { margin-bottom: 0; }
+  @media (max-width: 576px){
+    .cell{ min-width: 79px; }
+    .cell .cell-content{ padding: .15rem .3rem; }
+    .card .card-body{ padding: .5rem; }
+  }
   .now-pill { background: #ffffffff;}
 
   thead.table-light th{text-align:center; white-space:nowrap; }
@@ -507,12 +565,8 @@ if ($logged) {
     display:inline-flex; align-items:center; gap:.4rem;
     white-space:nowrap; max-width:100%;
   }
-  .capsule .cap-dot{
-    width:.6rem; height:.6rem; border-radius:50%;
-    border:1px solid rgba(0,0,0,.06); flex:0 0 auto;
-    background: var(--cap-bd, #94a3b8);
-  }
   .capsule .cap-text{ font-weight:600; overflow:hidden; text-overflow:ellipsis; display:inline-block; max-width:16ch; }
+  .capsule .cap-text.cap-text-full{ max-width:none; white-space:normal; overflow:visible; text-overflow:clip; }
   .capsule .cap-meta{ font-size:.78rem; opacity:.85; color:#475569; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
   .cell .cell-item .title { font-weight: 600; }
@@ -520,6 +574,88 @@ if ($logged) {
   .cell-pager { display:flex; align-items:center; justify-content:center; gap:.5rem; margin-top:.25rem; }
   .cell-pager .btn { padding: 0 .4rem; line-height: 1.2; }
   .cell-pager .page-indicator { font-size:.75rem; color:#6b7280; }
+  .week-nav-line { display:inline-flex; align-items:center; gap:.5rem; }
+  .week-nav-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #334155;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .week-nav-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .week-nav-btn i { font-size: .72rem; }
+  @media (max-width: 576px){
+    th.sticky-col{
+      width: 64px;
+      max-width: 64px;
+      padding: .2rem .15rem !important;
+      white-space: normal;
+    }
+    th.sticky-col .slot-desktop{ display:none !important; }
+    th.sticky-col .slot-mobile{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap:1px;
+      line-height:1.05;
+    }
+    th.sticky-col .slot-mobile .slot-index{
+      font-size:15px;
+      font-weight:700;
+      color: var(--bs-body-color);
+    }
+    th.sticky-col .slot-mobile .slot-time{
+      font-size:12px;
+      color: var(--bs-secondary-color) !important;
+    }
+    th.sticky-col .slot-mobile .slot-sep{
+      font-size:12px;
+      color: var(--bs-secondary-color) !important;
+      line-height:1;
+    }
+    .cell .capsule{
+      display:inline-flex;
+      width: 3.8em;
+      max-width: 3.8em;
+      box-sizing: border-box;
+      align-items: flex-start;
+      padding: .24rem .2rem .28rem .2rem;
+      line-height: 1.15;
+    }
+    .cell .capsule .cap-row{
+      display:block;
+      white-space: normal;
+      width: 100%;
+      max-width: 100%;
+    }
+    .cell .capsule .cap-text,
+    .cell .capsule .cap-meta{
+      display:block;
+      width: 100%;
+      max-width:100%;
+      white-space:normal;
+      overflow:visible;
+      text-overflow:clip;
+      overflow-wrap:anywhere;
+      word-break:break-all;
+    }
+    .cell .capsule .cap-text{
+      font-weight:500;
+    }
+    .cell .meta.text-truncate{
+      white-space: normal !important;
+      overflow: visible !important;
+      text-overflow: clip !important;
+      line-height: 1.15;
+    }
+  }
 
   /* ======= 新增：左右浮动圆形按钮 ======= */
   .fab {
@@ -592,7 +728,7 @@ if ($logged) {
             </div>
             <div>
               <label class="form-label">密码</label>
-              <input class="form-control form-control-lg" name="pin" inputmode="numeric" pattern="\d{4}" required>
+              <input type="password" class="form-control form-control-lg" name="pin" inputmode="numeric" pattern="\d{4}" required>
             </div>
             <button class="btn btn-primary btn-lg w-100" onclick="doLogin()">登录</button>
             <a href="register.php" class="btn btn-outline-secondary w-100 mt-2">去注册</a>
@@ -609,6 +745,13 @@ if ($logged) {
   <?php
     $nowDisplay2 = new DateTime('now', new DateTimeZone($displayTz));
     $weekNo = $startDate ? calc_week_no((clone $nowDisplay2)->setTimezone(new DateTimeZone($calcTz)), $startDate, $calcTz) : 0;
+    $weekRangeLabel = '';
+    if ($startDate) {
+      [$weekStart, $weekEnd] = calc_week_range($startDate, $weekNo, $calcTz);
+      $weekRangeLabel = (int)$weekStart->format('n') . '.' . (int)$weekStart->format('j')
+          . ' - '
+          . (int)$weekEnd->format('n') . '.' . (int)$weekEnd->format('j');
+    }
 
     $weekdayNames = [1=>'星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
     $headerDays   = array_values(array_intersect_key($weekdayNames, array_flip($enabledDays)));
@@ -630,6 +773,7 @@ if ($logged) {
     </div>
     <div class="d-flex align-items-center gap-2">
       <?php include __DIR__ . '/includes/github_badge.php'; ?>
+      <?php theme_selector_control(); ?>
       <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#fieldModal">显示字段</button>
       <?php if ($LOGIN_MODE === 'session'): ?>
         <a class="btn btn-outline-secondary btn-sm" href="?api=logout">退出</a>
@@ -643,7 +787,16 @@ if ($logged) {
   <div class="text-center mb-3">
     <h2 class="mb-1"><span id="nowTime" data-tz="<?=h($displayTz)?>"></span></h2>
     <div class="text-muted">
-      <?php if ($startDate): ?>当前第 <b><?= (int)$weekNo ?></b> 周<?php else: ?><span class="text-warning">（尚未设置课表开始日期）</span><?php endif; ?>
+      <?php if ($startDate): ?>
+        <div class="week-nav-line">
+          <button type="button" class="week-nav-btn" id="weekPrevBtn" aria-label="上一周"><i class="fa-solid fa-chevron-left"></i></button>
+          <span>当前第 <b id="weekNoValue"><?= (int)$weekNo ?></b> 周</span>
+          <button type="button" class="week-nav-btn" id="weekNextBtn" aria-label="下一周"><i class="fa-solid fa-chevron-right"></i></button>
+        </div>
+        <div class="small mt-1" id="weekRangeText"><?= h($weekRangeLabel) ?></div>
+      <?php else: ?>
+        <span class="text-warning">（尚未设置课表开始日期）</span>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -667,7 +820,6 @@ if ($logged) {
                       data-day="<?= $capDay ?>"
                       data-start="<?= h($capStart) ?>">
                   <span class="cap-row">
-                    <i class="cap-dot"></i>
                     <span class="cap-text"><?= h($first['name'] ?? '课程') ?></span>
                   </span>
                   <?php if ($teacherRoomTop !== ''): ?>
@@ -716,7 +868,7 @@ if ($logged) {
         <table class="table table-bordered align-middle table-sm">
           <thead class="table-light">
             <tr>
-              <th class="sticky-col">时间 / 节次</th>
+              <th class="sticky-col"></th>
               <?php foreach ($headerDays as $dname): ?><th class="text-center"><?=h($dname)?></th><?php endforeach; ?>
             </tr>
           </thead>
@@ -741,12 +893,23 @@ if ($logged) {
           ?>
 
           <?php foreach ($timeslots as $slot): ?>
-            <?php $pi = (int)$slot['idx']; $label = sprintf('%s-%s', $slot['start'], $slot['end']); ?>
+            <?php
+              $pi = (int)$slot['idx'];
+              $st = (string)($slot['start'] ?? '');
+              $et = (string)($slot['end'] ?? '');
+              $label = sprintf('%s-%s', $st, $et);
+            ?>
             <tr>
               <th class="sticky-col bg-white">
-                <div class="d-flex flex-column">
-                  <span class="fw-semibold"><?=h($label)?></span>
-                  <span class="text-muted small">第 <?= $pi ?> 节</span>
+                <div class="slot-desktop">
+                  <span class="fw-semibold">第 <?= $pi ?> 节</span>
+                  <span class="text-muted small"><?=h($label)?></span>
+                </div>
+                <div class="slot-mobile">
+                  <span class="slot-index"><?= $pi ?></span>
+                  <span class="slot-time"><?= h($st) ?></span>
+                  <span class="slot-sep">-</span>
+                  <span class="slot-time"><?= h($et) ?></span>
                 </div>
               </th>
               <?php foreach ($headerIdxs as $didx): ?>
@@ -802,7 +965,6 @@ if ($logged) {
                 <div class="list-group-item">
                   <span class="capsule" data-capsule data-day="<?= $d ?>" data-start="<?= h($st) ?>">
                     <span class="cap-row">
-                      <i class="cap-dot"></i>
                       <span class="cap-text"><?=h($c['name'] ?? '')?></span>
                     </span>
                   </span>
@@ -837,7 +999,6 @@ if ($logged) {
                 <div class="list-group-item">
                   <span class="capsule" data-capsule data-day="<?= $d ?>" data-start="<?= h($st) ?>">
                     <span class="cap-row">
-                      <i class="cap-dot"></i>
                       <span class="cap-text"><?=h($c['name'] ?? '')?></span>
                     </span>
                   </span>
@@ -888,15 +1049,19 @@ if ($logged) {
 <!-- ======= 左侧：分享 & 实验课表 圆形按钮 ======= -->
 <?php if ($logged): ?>
   <?php if ($LOGIN_MODE === 'session'): ?>
-    <?php $shareStyle = $hasLab ? '' : 'style="bottom: 24px;"'; ?>
-    <button class="fab fab-share" id="fabShare" title="分享课表" <?= $shareStyle ?>>
+    <?php
+      $shareBottomPx = $hasLab ? 96 : 24;
+      $shareDropGapPx = 12;
+      $shareDropBottomPx = $shareBottomPx + 56 + $shareDropGapPx;
+    ?>
+    <button class="fab fab-share" id="fabShare" title="分享课表" style="bottom: <?= (int)$shareBottomPx ?>px;">
       <!-- share icon -->
       <!-- <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a2.5 2.5 0 1 0 1.983 4.09l-7.518 4.01a2.5 2.5 0 1 0 0 1.8l7.518 4.01A2.5 2.5 0 1 0 13.5 15a2.48 2.48 0 0 0 1.37-.418l-7.52-4.01a2.5 2.5 0 0 0 0-1.145l7.52-4.01A2.48 2.48 0 0 0 13.5 1z"/></svg> -->
       <i class="fa-solid fa-share"></i>
         <!-- <i class="fa-solid fa-user"></i> -->
 
     </button>
-    <div class="share-dropup shadow" id="shareDropup">
+    <div class="share-dropup shadow" id="shareDropup" style="bottom: <?= (int)$shareDropBottomPx ?>px;">
       <div class="vstack gap-2">
         <button class="btn btn-outline-primary" data-bs-toggle="modal" data-bs-target="#shareCreateModal" onclick="hideShareDropup()">创建链接</button>
         <button class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#shareManageModal" onclick="hideShareDropup()">管理链接</button>
@@ -1024,6 +1189,14 @@ if ($logged) {
           </div>
 
           <div class="col-12">
+            <label class="form-label">周导航权限</label>
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" id="sc_allow_week_nav">
+              <label class="form-check-label" for="sc_allow_week_nav">允许访客查看其他周（默认仅当前周）</label>
+            </div>
+          </div>
+
+          <div class="col-12">
             <label class="form-label">显示设置</label>
             <div class="row g-2">
               <div class="col-auto"><div class="form-check"><input class="form-check-input" type="checkbox" id="sc_name" checked><label class="form-check-label" for="sc_name">课名</label></div></div>
@@ -1070,11 +1243,12 @@ if ($logged) {
                 <th>访问期限</th>
                 <th>最大访问次数</th>
                 <th>访问次数</th>
+                <th>跨周</th>
                 <th>链接</th>
                 <th>操作</th>
               </tr>
             </thead>
-            <tbody id="shareListBody"><tr><td colspan="7" class="text-center text-muted">加载中…</td></tr></tbody>
+            <tbody id="shareListBody"><tr><td colspan="8" class="text-center text-muted">加载中…</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1107,9 +1281,14 @@ function buildSearch(showAll){
 /* ========= 其余前端逻辑 ========= */
 const USER_ID = <?= (int)$uid_out ?>; // 用于颜色种子
 const NAME_MAX = 5;
+const BASE_WEEK_NO = <?= (int)$weekNo ?>;
+const START_DATE = <?= json_encode($startDate) ?>;
+const INITIAL_SHOW_ALL = <?= $showAllParam ? 'true' : 'false' ?>;
+const ALL_COURSES = <?= json_encode(array_values($courses), JSON_UNESCAPED_UNICODE) ?>;
 
 function clampName(s, n=NAME_MAX){
   if(!s) return '';
+  if (window.matchMedia('(max-width: 576px)').matches) return s;
   const arr = Array.from(s);
   return arr.length > n ? arr.slice(0, n).join('') + '…' : s;
 }
@@ -1144,7 +1323,7 @@ function openCellModal(td){
 
       const periods = (c.periods||[]).map(x=>parseInt(x,10)).sort((a,b)=>a-b);
       const startHHMM = periodStartFromList(periods) || td.getAttribute('data-start') || '';
-      const cap = buildCapsule(day, startHHMM, c.name||'', '', false);
+      const cap = buildCapsule(day, startHHMM, c.name||'', '', false, true);
       item.appendChild(cap);
 
       const teacherRoom = [c.teacher||'', c.room||''].filter(Boolean).join(' · ');
@@ -1223,6 +1402,7 @@ async function saveFields(){
 
 /* ======= period idx -> startHHMM ======= */
 const TIMESLOTS = <?= json_encode(array_values($timeslots), JSON_UNESCAPED_UNICODE) ?>;
+const ENABLED_DAYS = <?= json_encode(array_values($enabledDays), JSON_UNESCAPED_UNICODE) ?>;
 const PERIOD_START = {};
 for (const s of TIMESLOTS){ if (s && s.idx!=null && s.start) PERIOD_START[parseInt(s.idx,10)] = String(s.start); }
 function periodStartFromList(periods){
@@ -1238,7 +1418,7 @@ const DISPLAY_FIELDS = {
   weeks: <?= $showWeeks?'true':'false' ?>
 };
 
-function buildCapsule(day, startHHMM, text, metaText, withMeta){
+function buildCapsule(day, startHHMM, text, metaText, withMeta, fullText=false){
   const seed = `${USER_ID}|${day}|${startHHMM||''}`;
   const color = colorFromSeed(seed);
   const span = document.createElement('span');
@@ -1246,9 +1426,13 @@ function buildCapsule(day, startHHMM, text, metaText, withMeta){
   span.style.setProperty('--cap-bg', color.bg);
   span.style.setProperty('--cap-bd', color.bd);
   const row = document.createElement('span'); row.className='cap-row';
-  const dot = document.createElement('i');   dot.className='cap-dot';
-  const t   = document.createElement('span'); t.className='cap-text'; t.textContent = clampName(text || '');
-  row.appendChild(dot); row.appendChild(t);
+  const rawText = text || '';
+  const t   = document.createElement('span');
+  t.className='cap-text';
+  t.textContent = fullText ? rawText : clampName(rawText);
+  if (rawText) t.title = rawText;
+  if (fullText) t.classList.add('cap-text-full');
+  row.appendChild(t);
   span.appendChild(row);
   if (withMeta && metaText){
     const m = document.createElement('span'); m.className='cap-meta'; m.textContent = metaText;
@@ -1271,7 +1455,7 @@ function buildCellItem(c, day){
 
   if (DISPLAY_FIELDS.weeks && c.weeks){
     const metaWeeks = document.createElement('div'); metaWeeks.className='meta text-truncate';
-    metaWeeks.textContent = '周: ' + String(c.weeks);
+    metaWeeks.textContent = '周: ' + String(c.weeks).replace(/,/g, ',\u200b');
     wrap.appendChild(metaWeeks);
   }
   return wrap;
@@ -1301,8 +1485,8 @@ function renderCell(td){
 
   if (list.length > per){
     const pager = document.createElement('div'); pager.className='cell-pager';
-    const prev = document.createElement('button'); prev.type='button'; prev.className='btn btn-sm btn-outline-secondary'; prev.textContent='‹';
-    const next = document.createElement('button'); next.type='button'; next.className='btn btn-sm btn-outline-secondary'; next.textContent='›';
+    const prev = document.createElement('button'); prev.type='button'; prev.className='btn btn-sm btn-outline-secondary'; prev.innerHTML='<i class=\"fa-solid fa-angle-left\"></i>';
+    const next = document.createElement('button'); next.type='button'; next.className='btn btn-sm btn-outline-secondary'; next.innerHTML='<i class=\"fa-solid fa-angle-right\"></i>';
     const indi = document.createElement('span'); indi.className='page-indicator'; indi.textContent = (page+1) + '/' + totalPages;
 
     prev.onclick = (ev)=>{ ev.stopPropagation(); changeCellPage(td, -1); };
@@ -1327,21 +1511,172 @@ function changeCellPage(td, dir){
   renderCell(td);
 }
 
-(function initCells(){
-  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+const WEEK_STATE = {
+  weekNo: BASE_WEEK_NO,
+  minWeekNo: BASE_WEEK_NO <= 0 ? 0 : 1,
+  showAll: INITIAL_SHOW_ALL,
+  cache: new Map(),
+};
+
+function parseWeeksStringJS(s){
+  const text = String(s || '').trim();
+  if (!text) return [];
+  const out = [];
+  const parts = text.split(/\s*,\s*/);
+  for (const p0 of parts){
+    const p = p0.trim();
+    const m = p.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+    if (m){
+      let a = parseInt(m[1], 10);
+      let b = parseInt(m[2], 10);
+      if (a > b){ const t = a; a = b; b = t; }
+      for (let i = a; i <= b; i++) out.push(i);
+      continue;
+    }
+    if (/^\d{1,2}$/.test(p)) out.push(parseInt(p, 10));
+  }
+  return [...new Set(out)].sort((a,b)=>a-b);
+}
+
+function courseInWeek(c, weekNo){
+  const weeksArr = parseWeeksStringJS(c.weeks || '');
+  let ok = weeksArr.includes(weekNo);
+  const wt = String(c.week_type || 'all').toLowerCase();
+  if (ok && wt === 'odd' && weekNo % 2 === 0) ok = false;
+  if (ok && wt === 'even' && weekNo % 2 === 1) ok = false;
+  return ok;
+}
+
+function buildGridForWeek(weekNo, showAll){
+  const grid = {};
+  for (const d of ENABLED_DAYS) grid[d] = {};
+  for (const c of ALL_COURSES){
+    const day = parseInt(c.day || 0, 10);
+    if (!grid[day]) continue;
+    if (!showAll && !courseInWeek(c, weekNo)) continue;
+    const periods = Array.isArray(c.periods) ? c.periods : [];
+    for (const pRaw of periods){
+      const p = parseInt(pRaw, 10);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      if (!grid[day][p]) grid[day][p] = [];
+      grid[day][p].push(c);
+    }
+  }
+  return grid;
+}
+
+function cacheWeek(weekNo){
+  if (weekNo < WEEK_STATE.minWeekNo) return;
+  if (!WEEK_STATE.cache.has(weekNo)) {
+    WEEK_STATE.cache.set(weekNo, buildGridForWeek(weekNo, false));
+  }
+}
+
+function syncWeekCache(){
+  const keep = new Set([WEEK_STATE.weekNo - 1, WEEK_STATE.weekNo, WEEK_STATE.weekNo + 1].filter(w => w >= WEEK_STATE.minWeekNo));
+  for (const w of keep) cacheWeek(w);
+  for (const key of Array.from(WEEK_STATE.cache.keys())){
+    if (!keep.has(key)) WEEK_STATE.cache.delete(key);
+  }
+}
+
+function parseYmdToUtcDate(ymd){
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+}
+
+function formatWeekRangeLabel(weekNo){
+  const base = parseYmdToUtcDate(START_DATE);
+  if (!base) return '';
+  const start = new Date(base.getTime());
+  const offsetDays = (weekNo <= 0 ? -7 : (weekNo - 1) * 7);
+  start.setUTCDate(start.getUTCDate() + offsetDays);
+  const end = new Date(start.getTime());
+  end.setUTCDate(end.getUTCDate() + 6);
+  return `${start.getUTCMonth() + 1}.${start.getUTCDate()} - ${end.getUTCMonth() + 1}.${end.getUTCDate()}`;
+}
+
+function setGridToDom(grid){
+  document.querySelectorAll('td.cell[data-day][data-period]').forEach(td => {
+    const day = parseInt(td.getAttribute('data-day') || '0', 10);
+    const period = parseInt(td.getAttribute('data-period') || '0', 10);
+    const list = (grid?.[day]?.[period]) || [];
+    if (list.length > 0) td.setAttribute('data-courses', JSON.stringify(list));
+    else td.removeAttribute('data-courses');
+    td.setAttribute('data-page', '0');
+    renderCell(td);
+  });
+}
+
+function syncWeekHeader(){
+  const weekNoEl = document.getElementById('weekNoValue');
+  if (weekNoEl) weekNoEl.textContent = String(WEEK_STATE.weekNo);
+  const rangeEl = document.getElementById('weekRangeText');
+  if (rangeEl) rangeEl.textContent = formatWeekRangeLabel(WEEK_STATE.weekNo);
+  const prevBtn = document.getElementById('weekPrevBtn');
+  if (prevBtn) prevBtn.disabled = WEEK_STATE.weekNo <= WEEK_STATE.minWeekNo;
+}
+
+function applyWeekView(){
+  const grid = WEEK_STATE.showAll
+    ? buildGridForWeek(WEEK_STATE.weekNo, true)
+    : (WEEK_STATE.cache.get(WEEK_STATE.weekNo) || buildGridForWeek(WEEK_STATE.weekNo, false));
+  setGridToDom(grid);
+  syncWeekHeader();
+}
+
+function initWeekNav(){
+  if (!START_DATE) return;
+  syncWeekCache();
+  applyWeekView();
+
+  const prevBtn = document.getElementById('weekPrevBtn');
+  const nextBtn = document.getElementById('weekNextBtn');
+  const toggleAll = document.getElementById('toggleAll');
+
+  const moveWeek = (dir)=>{
+    if (WEEK_STATE.showAll) {
+      WEEK_STATE.showAll = false;
+      if (toggleAll) toggleAll.checked = false;
+    }
+    const target = WEEK_STATE.weekNo + dir;
+    if (target < WEEK_STATE.minWeekNo) return;
+    WEEK_STATE.weekNo = target;
+    syncWeekCache();
+    applyWeekView();
+    clearHL();
+  };
+
+  prevBtn?.addEventListener('click', ()=> moveWeek(-1));
+  nextBtn?.addEventListener('click', ()=> moveWeek(+1));
+}
+
+function paintStaticCapsules(){
   document.querySelectorAll('[data-capsule]').forEach(el=>{
     const day = parseInt(el.getAttribute('data-day')||'0',10);
     const st  = el.getAttribute('data-start') || '';
     const color = colorFromSeed(`${USER_ID}|${day}|${st}`);
     el.style.setProperty('--cap-bg', color.bg);
     el.style.setProperty('--cap-bd', color.bd);
-    const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
+    const t = el.querySelector('.cap-text');
+    if (t){ t.textContent = clampName(t.textContent || ''); }
   });
+}
+
+(function initCells(){
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
+  initWeekNav();
 })();
+window.addEventListener('kb-theme-change', ()=>{
+  document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
+  paintStaticCapsules();
+});
 
 /* ===== 实时高亮：当前（绿） + 下一节（黄）；跨天回滚 ===== */
 const CALC_TZ  = "<?=h($calcTz)?>";
-const DAYS     = <?= json_encode(array_values($enabledDays), JSON_UNESCAPED_UNICODE) ?>;
+const DAYS     = ENABLED_DAYS;
 
 function nowInTZ(tz){
   const f = new Intl.DateTimeFormat('en-GB', {
@@ -1393,6 +1728,10 @@ function findNext(dayToday, hhmm, slots){
 (function liveHighlight(){
   const slots = sortSlots(TIMESLOTS);
   function tick(){
+    if (START_DATE && WEEK_STATE.weekNo !== BASE_WEEK_NO){
+      clearHL();
+      return;
+    }
     clearHL();
     const {hhmm, day} = nowInTZ(CALC_TZ);
     markCurrent(day, hhmm, slots);
@@ -1411,7 +1750,11 @@ function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h) + s
 function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
 function colorFromSeed(seed){
   const hv = djb2(String(seed)); const h = hv % 360;
-  const sBg=70, lBg=92, sBd=65, lBd=55;
+  const isDark = document.documentElement.getAttribute('data-bs-theme') === 'dark';
+  const sBg = isDark ? 65 : 70;
+  const lBg = isDark ? 70 : 92;
+  const sBd = isDark ? 65 : 65;
+  const lBd = isDark ? 70 : 55;
   return { bg: hsl(h, sBg, lBg), bd: hsl(h, sBd, lBd) };
 }
 
@@ -1517,23 +1860,31 @@ async function loadShareListHints(targetHintId){
 }
 async function refreshShareListTable(){
   const body = document.getElementById('shareListBody'); if (!body) return;
-  body.innerHTML = '<tr><td colspan="7" class="text-center text-muted">加载中…</td></tr>';
+  body.innerHTML = '<tr><td colspan="8" class="text-center text-muted">加载中…</td></tr>';
   const j = await loadShareListHints('shareLimitHint2');
-  if (!j.ok){ body.innerHTML = '<tr><td colspan="7" class="text-center text-danger">加载失败</td></tr>'; return; }
+  if (!j.ok){ body.innerHTML = '<tr><td colspan="8" class="text-center text-danger">加载失败</td></tr>'; return; }
   const list = j.list || [];
-  if (!list.length){ body.innerHTML = '<tr><td colspan="7" class="text-center text-muted">暂无分享链接</td></tr>'; return; }
+  if (!list.length){ body.innerHTML = '<tr><td colspan="8" class="text-center text-muted">暂无分享链接</td></tr>'; return; }
   body.innerHTML = '';
   list.forEach((it, idx)=>{
     if (it.disabled) return;
     const tr = document.createElement('tr');
     const exp = it.expires_label || '—';
     const maxv = it.max_visits==null ? '无限制' : it.max_visits;
+    const navText = it.allow_week_nav ? '允许' : '仅当前周';
+    const navBtnText = it.allow_week_nav ? '设为仅当前周' : '设为允许';
     tr.innerHTML = `
       <td>${idx+1}</td>
       <td><code>${it.pass}</code></td>
       <td>${exp}</td>
       <td>${maxv}</td>
       <td>${it.visit_count}</td>
+      <td>
+        <div class="d-flex align-items-center gap-2">
+          <span class="small">${navText}</span>
+          <button class="btn btn-sm btn-outline-primary" data-id="${it.id}" data-allow="${it.allow_week_nav ? 1 : 0}">${navBtnText}</button>
+        </div>
+      </td>
       <td class="text-truncate" style="max-width:380px;"><a href="${it.url}" target="_blank">${it.url}</a></td>
       <td class="d-flex gap-2">
         <button class="btn btn-sm btn-outline-secondary" data-url="${it.url}">复制</button>
@@ -1542,6 +1893,15 @@ async function refreshShareListTable(){
     `;
     tr.querySelector('button.btn-outline-secondary').addEventListener('click', ev=>{
       const url = ev.currentTarget.getAttribute('data-url'); navigator.clipboard.writeText(url).then(()=>{ ev.currentTarget.textContent='已复制'; setTimeout(()=>ev.currentTarget.textContent='复制',1200); });
+    });
+    tr.querySelector('button.btn-outline-primary').addEventListener('click', async ev=>{
+      const btn = ev.currentTarget;
+      const id = parseInt(btn.getAttribute('data-id'), 10);
+      const allow = btn.getAttribute('data-allow') === '1' ? 0 : 1;
+      const r = await fetch(buildApiUrl('share_update'), {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id, allow_week_nav: allow})});
+      const j2 = await r.json();
+      if (!j2.ok) { alert(j2.error||'更新失败'); return; }
+      refreshShareListTable();
     });
     tr.querySelector('button.btn-outline-danger').addEventListener('click', async ev=>{
       const id = parseInt(ev.currentTarget.getAttribute('data-id'),10);
@@ -1608,12 +1968,13 @@ async function createShareLink(){
     alert('请至少选择一个课表进行分享');
     return;
   }
+  const allow_week_nav = !!document.getElementById('sc_allow_week_nav')?.checked;
 
   try{
     const r = await fetch(buildApiUrl('share_create'), {
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df, scope: scope })
+      body: JSON.stringify({ tz_mode: tzMode, tz_value, expires: exp, max_visits, display_fields: df, scope: scope, allow_week_nav })
     });
     const j = await r.json();
     if (!j.ok) { alert(j.error||'创建失败'); return; }
@@ -1811,6 +2172,7 @@ async function createShareLink(){
     }
   });
 </script>
+<?php theme_controls_script(); ?>
 <?php include __DIR__ . '/includes/footer.php'; ?>
 </body>
 </html>

@@ -5,6 +5,7 @@ mb_internal_encoding('UTF-8');
 session_start();
 
 require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/includes/theme.php';
 
 /* ============== 工具 ============== */
 function db(): PDO {
@@ -102,6 +103,7 @@ if (!is_logged_in()) { header('Location: index.php'); exit; }
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+<?php theme_head_script(); ?>
 <title>账户设置</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
@@ -243,5 +245,6 @@ async function clearLab(){
 }
 loadInfo();
 </script>
+<?php theme_controls_script(); ?>
 </body>
 </html>

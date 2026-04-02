@@ -52,6 +52,7 @@ CREATE TABLE `shared_links` (
   `tz_mode` enum('client_dynamic','client_fixed','custom') NOT NULL DEFAULT 'client_dynamic',
   `tz_value` varchar(64) DEFAULT NULL,
   `display_fields` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL CHECK (json_valid(`display_fields`)),
+  `allow_week_nav` tinyint(1) NOT NULL DEFAULT 0,
   `max_visits` int(10) UNSIGNED DEFAULT NULL,
   `visit_count` int(10) UNSIGNED NOT NULL DEFAULT 0,
   `expires_at` datetime DEFAULT NULL,
