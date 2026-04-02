@@ -2,6 +2,12 @@
 
 > 仅记录 Release 版本，Beta 版本不在此列出。
 
+## v2.1.1 (2026-04-02)
+
+**Bug 修复 (Bug Fixes)**
+
+- **共享页数据库前缀修复**：修复 `share_kb.php` 在读取课表时直接使用 `user_schedule / user_lab_schedule` 导致的表不存在问题；现统一通过 `table()` 读取带前缀表名（如 `kb_user_schedule`），兼容 `config.php` 中的 `DB_PREFIX` 配置。
+
 ## v2.1.0 (2025-12-01)
 
 **邮箱找回与密码重置 (Email Recovery & Password Reset)**

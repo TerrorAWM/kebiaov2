@@ -121,9 +121,9 @@ if (!in_array($viewType, $scopeArr, true)) {
     $viewType = $scopeArr[0] ?? 'main';
 }
 
-// 根据viewType加载对应的课表
-$tableName = $viewType === 'lab' ? 'user_lab_schedule' : 'user_schedule';
-$sch = db()->prepare("SELECT data FROM {$tableName} WHERE user_id = ?");
+// 根据viewType加载对应的课表（走 DB_PREFIX）
+$tableBase = $viewType === 'lab' ? 'user_lab_schedule' : 'user_schedule';
+$sch = db()->prepare('SELECT data FROM ' . table($tableBase) . ' WHERE user_id = ?');
 $sch->execute([$owner_id]);
 $schRow = $sch->fetch();
 $schedule = $schRow ? (json_decode($schRow['data'] ?? '{}', true) ?: []) : [];
