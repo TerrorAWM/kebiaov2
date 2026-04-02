@@ -312,6 +312,8 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
   }
   .card { border-radius: 1rem; }
   .sticky-col { position: sticky; left: 0; z-index: 2; background: #fff; white-space: nowrap; }
+  .slot-desktop{ display:flex; flex-direction:column; align-items:flex-start; }
+  .slot-mobile{ display:none; }
   .slot-badge { font-size: .75rem; }
   .cell { min-width: 140px; }
   @media (max-width: 576px){ .cell{ min-width: 120px; } }
@@ -334,7 +336,6 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     line-height:1.25; max-width:100%;
   }
   .capsule .cap-row{ display:inline-flex; align-items:center; gap:.4rem; white-space:nowrap; max-width:100%; }
-  .capsule .cap-dot{ width:.6rem; height:.6rem; border-radius:50%; border:1px solid rgba(0,0,0,.06); flex:0 0 auto; background: var(--cap-bd, #94a3b8); }
   .capsule .cap-text{ font-weight:600; overflow:hidden; text-overflow:ellipsis; display:inline-block; max-width:16ch; }
   .capsule .cap-meta{ font-size:.78rem; opacity:.85; color:#475569; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
@@ -358,6 +359,37 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
   }
   .week-nav-btn:disabled { opacity: .45; cursor: not-allowed; }
   .week-nav-btn i { font-size: .72rem; }
+  @media (max-width: 576px){
+    th.sticky-col{
+      width: 64px;
+      max-width: 64px;
+      padding: .2rem .15rem !important;
+      white-space: normal;
+    }
+    th.sticky-col .slot-desktop{ display:none !important; }
+    th.sticky-col .slot-mobile{
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      gap:1px;
+      line-height:1.05;
+    }
+    th.sticky-col .slot-mobile .slot-index{
+      font-size:15px;
+      font-weight:700;
+      color:#000;
+    }
+    th.sticky-col .slot-mobile .slot-time{
+      font-size:12px;
+      color: var(--bs-secondary-color) !important;
+    }
+    th.sticky-col .slot-mobile .slot-sep{
+      font-size:12px;
+      color: var(--bs-secondary-color) !important;
+      line-height:1;
+    }
+  }
 </style>
 </head>
 <body>
@@ -480,7 +512,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
               <span class="capsule" data-capsule
                     data-day="<?= $capDay ?>"
                     data-start="<?= h($capStart) ?>">
-                <span class="cap-row"><i class="cap-dot"></i><span class="cap-text"><?= h($first['name'] ?? '课程') ?></span></span>
+                <span class="cap-row"><span class="cap-text"><?= h($first['name'] ?? '课程') ?></span></span>
                 <?php if ($teacherRoomTop !== ''): ?><span class="cap-meta"><?= h($teacherRoomTop) ?></span><?php endif; ?>
               </span>
               <?php if ($extra > 0): ?>
@@ -509,7 +541,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
           <table class="table table-bordered align-middle table-sm">
             <thead class="table-light">
               <tr>
-                <th class="sticky-col">时间 / 节次</th>
+                <th class="sticky-col"></th>
                 <?php foreach ($headerDays as $dname): ?><th class="text-center"><?=h($dname)?></th><?php endforeach; ?>
               </tr>
             </thead>
@@ -534,12 +566,23 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
             ?>
 
             <?php foreach ($timeslots as $slot): ?>
-              <?php $pi = (int)$slot['idx']; $label = sprintf('%s-%s', $slot['start'], $slot['end']); ?>
+              <?php
+                $pi = (int)$slot['idx'];
+                $st = (string)($slot['start'] ?? '');
+                $et = (string)($slot['end'] ?? '');
+                $label = sprintf('%s-%s', $st, $et);
+              ?>
               <tr>
                 <th class="sticky-col bg-white">
-                  <div class="d-flex flex-column">
-                    <span class="fw-semibold"><?=h($label)?></span>
-                    <span class="text-muted small">第 <?= $pi ?> 节</span>
+                  <div class="slot-desktop">
+                    <span class="fw-semibold">第 <?= $pi ?> 节</span>
+                    <span class="text-muted small"><?=h($label)?></span>
+                  </div>
+                  <div class="slot-mobile">
+                    <span class="slot-index"><?= $pi ?></span>
+                    <span class="slot-time"><?= h($st) ?></span>
+                    <span class="slot-sep">-</span>
+                    <span class="slot-time"><?= h($et) ?></span>
                   </div>
                 </th>
 
@@ -621,9 +664,8 @@ function buildCapsule(day, startHHMM, text, metaText, withMeta){
   span.style.setProperty('--cap-bg', color.bg);
   span.style.setProperty('--cap-bd', color.bd);
   const row = document.createElement('span'); row.className='cap-row';
-  const dot = document.createElement('i');   dot.className='cap-dot';
   const t   = document.createElement('span'); t.className='cap-text'; t.textContent = clampName(text || '');
-  row.appendChild(dot); row.appendChild(t); span.appendChild(row);
+  row.appendChild(t); span.appendChild(row);
   if (withMeta && metaText){ const m=document.createElement('span'); m.className='cap-meta'; m.textContent=metaText; span.appendChild(m); }
   return span;
 }
