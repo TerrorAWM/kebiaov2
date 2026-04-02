@@ -2,9 +2,16 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/db.php';
+session_start();
 
 function h(string $s): string {
     return htmlspecialchars($s, ENT_QUOTES, 'UTF-8');
+}
+
+function redirect_self(): void {
+    $self = $_SERVER['PHP_SELF'] ?? 'migrate.php';
+    header('Location: ' . $self);
+    exit;
 }
 
 function load_schema_from_sql(string $sqlPath): array {
@@ -158,33 +165,81 @@ function repair_missing(PDO $pdo, array $missing, array $schemaTables, string $p
 }
 
 $errors = [];
+$authError = '';
 $repairResults = [];
 $didRepair = false;
 $missingBefore = ['tables' => [], 'columns' => []];
 $missingAfter = ['tables' => [], 'columns' => []];
 $schemaTables = [];
 
-try {
-    $pdo = new PDO(DB_DSN, DB_USER, DB_PASS, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-    ]);
+$backupPassword = defined('BACKUP_PASSWORD') ? (string)BACKUP_PASSWORD : '';
+$hasBackupPassword = ($backupPassword !== '');
+if (empty($_SESSION['migrate_csrf']) || !is_string($_SESSION['migrate_csrf'])) {
+    $_SESSION['migrate_csrf'] = bin2hex(random_bytes(16));
+}
+$csrf = (string)$_SESSION['migrate_csrf'];
+$isAuthed = !empty($_SESSION['migrate_authed']) && $_SESSION['migrate_authed'] === true;
+if (!$hasBackupPassword) {
+    unset($_SESSION['migrate_authed']);
+    $isAuthed = false;
+}
 
-    $schema = load_schema_from_sql(__DIR__ . '/db.sql');
-    $schemaTables = $schema['tables'];
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = (string)($_POST['action'] ?? '');
 
-    $missingBefore = detect_missing($pdo, $schemaTables, DB_PREFIX);
-
-    if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'repair') {
-        $didRepair = true;
-        if (!empty($missingBefore['tables']) || !empty($missingBefore['columns'])) {
-            $repairResults = repair_missing($pdo, $missingBefore, $schemaTables, DB_PREFIX);
-        }
+    if ($action === 'logout') {
+        unset($_SESSION['migrate_authed']);
+        redirect_self();
     }
 
-    $missingAfter = detect_missing($pdo, $schemaTables, DB_PREFIX);
-} catch (Throwable $e) {
-    $errors[] = $e->getMessage();
+    if ($action === 'auth') {
+        $token = (string)($_POST['csrf'] ?? '');
+        if (!hash_equals($csrf, $token)) {
+            $authError = '请求无效，请刷新后重试。';
+        } elseif (!$hasBackupPassword) {
+            $authError = '未设置 BACKUP_PASSWORD，请先在 config.php 中配置。';
+        } else {
+            $input = (string)($_POST['backup_password'] ?? '');
+            if (hash_equals($backupPassword, $input)) {
+                session_regenerate_id(true);
+                $_SESSION['migrate_authed'] = true;
+                redirect_self();
+            }
+            $authError = 'backup 密码错误。';
+        }
+    }
+}
+
+$isAuthed = !empty($_SESSION['migrate_authed']) && $_SESSION['migrate_authed'] === true;
+
+if ($isAuthed) {
+    try {
+        $pdo = new PDO(DB_DSN, DB_USER, DB_PASS, [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        ]);
+
+        $schema = load_schema_from_sql(__DIR__ . '/db.sql');
+        $schemaTables = $schema['tables'];
+
+        $missingBefore = detect_missing($pdo, $schemaTables, DB_PREFIX);
+
+        if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'repair') {
+            $token = (string)($_POST['csrf'] ?? '');
+            if (!hash_equals($csrf, $token)) {
+                $errors[] = '请求无效，请刷新后重试。';
+            } else {
+                $didRepair = true;
+                if (!empty($missingBefore['tables']) || !empty($missingBefore['columns'])) {
+                    $repairResults = repair_missing($pdo, $missingBefore, $schemaTables, DB_PREFIX);
+                }
+            }
+        }
+
+        $missingAfter = detect_missing($pdo, $schemaTables, DB_PREFIX);
+    } catch (Throwable $e) {
+        $errors[] = $e->getMessage();
+    }
 }
 
 $missingTableCountBefore = count($missingBefore['tables']);
@@ -208,122 +263,151 @@ $hasMissingAfter = ($missingTableCountAfter + $missingColumnCountAfter) > 0;
 </head>
 <body>
 <div class="container py-4">
-  <div class="card shadow-sm mb-3">
-    <div class="card-body">
-      <h4 class="mb-3">数据库迁移检测</h4>
-      <div class="small text-muted mb-2">检测基准：<span class="mono">db.sql</span>（当前仓库最新结构）</div>
-      <div class="small text-muted">数据库：<span class="mono"><?= h(DB_NAME) ?></span>，表前缀：<span class="mono"><?= h(DB_PREFIX) ?></span></div>
-    </div>
-  </div>
-
-  <?php if (!empty($errors)): ?>
-    <div class="alert alert-danger">
-      <div class="fw-semibold mb-1">检测失败</div>
-      <?php foreach ($errors as $err): ?>
-        <div><?= h($err) ?></div>
-      <?php endforeach; ?>
-    </div>
-  <?php else: ?>
-
-    <div class="card shadow-sm mb-3">
-      <div class="card-body">
-        <div class="d-flex flex-wrap gap-3 align-items-center">
-          <span class="badge text-bg-light border">缺失表：<?= (int)$missingTableCountAfter ?></span>
-          <span class="badge text-bg-light border">缺失字段：<?= (int)$missingColumnCountAfter ?></span>
-          <?php if (!$hasMissingAfter): ?>
-            <span class="badge text-bg-success">数据库结构完整</span>
-          <?php else: ?>
-            <span class="badge text-bg-warning">存在缺失项</span>
-          <?php endif; ?>
+  <?php if (!$isAuthed): ?>
+    <div class="row justify-content-center">
+      <div class="col-12 col-sm-8 col-md-6 col-lg-4">
+        <div class="card shadow-sm">
+          <div class="card-body">
+            <h5 class="mb-3 text-center">请输入密码进入</h5>
+            <?php if ($authError !== ''): ?>
+              <div class="alert alert-danger py-2"><?= h($authError) ?></div>
+            <?php endif; ?>
+            <form method="post" class="d-grid gap-2">
+              <input type="hidden" name="action" value="auth">
+              <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+              <input type="password" class="form-control" name="backup_password" required autocomplete="current-password" placeholder="密码">
+              <button type="submit" class="btn btn-primary">进入</button>
+            </form>
+          </div>
         </div>
       </div>
     </div>
 
+  <?php else: ?>
     <div class="card shadow-sm mb-3">
       <div class="card-body">
-        <h6 class="mb-2">缺失表</h6>
-        <?php if (empty($missingAfter['tables'])): ?>
-          <div class="text-muted">无</div>
-        <?php else: ?>
-          <ul class="mb-0">
-            <?php foreach ($missingAfter['tables'] as $t): ?>
-              <li><span class="mono"><?= h($t['real_table']) ?></span></li>
-            <?php endforeach; ?>
-          </ul>
-        <?php endif; ?>
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <h4 class="mb-0">数据库迁移检测</h4>
+          <form method="post" class="m-0">
+            <input type="hidden" name="action" value="logout">
+            <button type="submit" class="btn btn-outline-secondary btn-sm">退出验证</button>
+          </form>
+        </div>
+        <div class="small text-muted mb-2">检测基准：<span class="mono">db.sql</span>（当前仓库最新结构）</div>
+        <div class="small text-muted">数据库：<span class="mono"><?= h(DB_NAME) ?></span>，表前缀：<span class="mono"><?= h(DB_PREFIX) ?></span></div>
       </div>
     </div>
 
-    <div class="card shadow-sm mb-3">
-      <div class="card-body">
-        <h6 class="mb-2">缺失字段</h6>
-        <?php if (empty($missingAfter['columns'])): ?>
-          <div class="text-muted">无</div>
-        <?php else: ?>
-          <div class="table-responsive">
-            <table class="table table-sm align-middle mb-0">
-              <thead class="table-light">
-                <tr>
-                  <th>表</th>
-                  <th>字段</th>
-                </tr>
-              </thead>
-              <tbody>
-                <?php foreach ($missingAfter['columns'] as $c): ?>
-                  <tr>
-                    <td class="mono"><?= h($c['real_table']) ?></td>
-                    <td class="mono"><?= h($c['column']) ?></td>
-                  </tr>
-                <?php endforeach; ?>
-              </tbody>
-            </table>
-          </div>
-        <?php endif; ?>
+    <?php if (!empty($errors)): ?>
+      <div class="alert alert-danger">
+        <div class="fw-semibold mb-1">检测失败</div>
+        <?php foreach ($errors as $err): ?>
+          <div><?= h($err) ?></div>
+        <?php endforeach; ?>
       </div>
-    </div>
+    <?php else: ?>
 
-    <?php if ($didRepair): ?>
       <div class="card shadow-sm mb-3">
         <div class="card-body">
-          <h6 class="mb-2">本次修复结果</h6>
-          <?php if (empty($repairResults)): ?>
-            <div class="text-muted">无需修复（修复前未检测到缺失项）。</div>
+          <div class="d-flex flex-wrap gap-3 align-items-center">
+            <span class="badge text-bg-light border">缺失表：<?= (int)$missingTableCountAfter ?></span>
+            <span class="badge text-bg-light border">缺失字段：<?= (int)$missingColumnCountAfter ?></span>
+            <?php if (!$hasMissingAfter): ?>
+              <span class="badge text-bg-success">数据库结构完整</span>
+            <?php else: ?>
+              <span class="badge text-bg-warning">存在缺失项</span>
+            <?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6 class="mb-2">缺失表</h6>
+          <?php if (empty($missingAfter['tables'])): ?>
+            <div class="text-muted">无</div>
           <?php else: ?>
             <ul class="mb-0">
-              <?php foreach ($repairResults as $r): ?>
-                <li>
-                  <?php if ($r['ok']): ?>
-                    <span class="text-success">[成功]</span>
-                  <?php else: ?>
-                    <span class="text-danger">[失败]</span>
-                  <?php endif; ?>
-                  <span class="mono"><?= h($r['target']) ?></span>
-                  <span class="text-muted">- <?= h($r['message']) ?></span>
-                </li>
+              <?php foreach ($missingAfter['tables'] as $t): ?>
+                <li><span class="mono"><?= h($t['real_table']) ?></span></li>
               <?php endforeach; ?>
             </ul>
           <?php endif; ?>
         </div>
       </div>
-    <?php endif; ?>
 
-    <div class="card shadow-sm">
-      <div class="card-body d-flex flex-wrap gap-2 align-items-center justify-content-between">
-        <div class="small text-muted">点击“修复缺失项”才会执行数据库变更。</div>
-        <div class="d-flex gap-2">
-          <?php if ($hasMissingAfter): ?>
-            <form method="post" class="m-0">
-              <input type="hidden" name="action" value="repair">
-              <button type="submit" class="btn btn-primary">修复缺失项</button>
-            </form>
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6 class="mb-2">缺失字段</h6>
+          <?php if (empty($missingAfter['columns'])): ?>
+            <div class="text-muted">无</div>
           <?php else: ?>
-            <button type="button" class="btn btn-success" disabled>无需修复</button>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                  <tr>
+                    <th>表</th>
+                    <th>字段</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <?php foreach ($missingAfter['columns'] as $c): ?>
+                    <tr>
+                      <td class="mono"><?= h($c['real_table']) ?></td>
+                      <td class="mono"><?= h($c['column']) ?></td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
           <?php endif; ?>
-          <a class="btn btn-outline-secondary" href="index.php">返回首页</a>
         </div>
       </div>
-    </div>
 
+      <?php if ($didRepair): ?>
+        <div class="card shadow-sm mb-3">
+          <div class="card-body">
+            <h6 class="mb-2">本次修复结果</h6>
+            <?php if (empty($repairResults)): ?>
+              <div class="text-muted">无需修复（修复前未检测到缺失项）。</div>
+            <?php else: ?>
+              <ul class="mb-0">
+                <?php foreach ($repairResults as $r): ?>
+                  <li>
+                    <?php if ($r['ok']): ?>
+                      <span class="text-success">[成功]</span>
+                    <?php else: ?>
+                      <span class="text-danger">[失败]</span>
+                    <?php endif; ?>
+                    <span class="mono"><?= h($r['target']) ?></span>
+                    <span class="text-muted">- <?= h($r['message']) ?></span>
+                  </li>
+                <?php endforeach; ?>
+              </ul>
+            <?php endif; ?>
+          </div>
+        </div>
+      <?php endif; ?>
+
+      <div class="card shadow-sm">
+        <div class="card-body d-flex flex-wrap gap-2 align-items-center justify-content-between">
+          <div class="small text-muted">点击“修复缺失项”才会执行数据库变更。</div>
+          <div class="d-flex gap-2">
+            <?php if ($hasMissingAfter): ?>
+              <form method="post" class="m-0">
+                <input type="hidden" name="action" value="repair">
+                <input type="hidden" name="csrf" value="<?= h($csrf) ?>">
+                <button type="submit" class="btn btn-primary">修复缺失项</button>
+              </form>
+            <?php else: ?>
+              <button type="button" class="btn btn-success" disabled>无需修复</button>
+            <?php endif; ?>
+            <a class="btn btn-outline-secondary" href="index.php">返回首页</a>
+          </div>
+        </div>
+      </div>
+
+    <?php endif; ?>
   <?php endif; ?>
 </div>
 </body>

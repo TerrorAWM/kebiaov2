@@ -529,7 +529,12 @@ if ($logged) {
   .slot-mobile{ display:none; }
   .slot-badge { font-size: .75rem; }
   .cell { min-width: 140px; }
-  @media (max-width: 576px){ .cell{ min-width: 120px; } }
+  .table.table-bordered.align-middle.table-sm { margin-bottom: 0; }
+  @media (max-width: 576px){
+    .cell{ min-width: 79px; }
+    .cell .cell-content{ padding: .15rem .3rem; }
+    .card .card-body{ padding: .5rem; }
+  }
   .now-pill { background: #ffffffff;}
 
   thead.table-light th{text-align:center; white-space:nowrap; }
@@ -559,6 +564,7 @@ if ($logged) {
     white-space:nowrap; max-width:100%;
   }
   .capsule .cap-text{ font-weight:600; overflow:hidden; text-overflow:ellipsis; display:inline-block; max-width:16ch; }
+  .capsule .cap-text.cap-text-full{ max-width:none; white-space:normal; overflow:visible; text-overflow:clip; }
   .capsule .cap-meta{ font-size:.78rem; opacity:.85; color:#475569; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
   .cell .cell-item .title { font-weight: 600; }
@@ -611,6 +617,35 @@ if ($logged) {
       font-size:12px;
       color: var(--bs-secondary-color) !important;
       line-height:1;
+    }
+    .cell .capsule{
+      display:inline-flex;
+      width: 3.8em;
+      max-width: 3.8em;
+      box-sizing: border-box;
+      align-items: flex-start;
+      padding: .24rem .2rem .28rem .2rem;
+      line-height: 1.15;
+    }
+    .cell .capsule .cap-row{
+      display:block;
+      white-space: normal;
+      width: 100%;
+      max-width: 100%;
+    }
+    .cell .capsule .cap-text,
+    .cell .capsule .cap-meta{
+      display:block;
+      width: 100%;
+      max-width:100%;
+      white-space:normal;
+      overflow:visible;
+      text-overflow:clip;
+      overflow-wrap:anywhere;
+      word-break:break-all;
+    }
+    .cell .capsule .cap-text{
+      font-weight:500;
     }
   }
 
@@ -1240,6 +1275,7 @@ const ALL_COURSES = <?= json_encode(array_values($courses), JSON_UNESCAPED_UNICO
 
 function clampName(s, n=NAME_MAX){
   if(!s) return '';
+  if (window.matchMedia('(max-width: 576px)').matches) return s;
   const arr = Array.from(s);
   return arr.length > n ? arr.slice(0, n).join('') + '…' : s;
 }
@@ -1274,7 +1310,7 @@ function openCellModal(td){
 
       const periods = (c.periods||[]).map(x=>parseInt(x,10)).sort((a,b)=>a-b);
       const startHHMM = periodStartFromList(periods) || td.getAttribute('data-start') || '';
-      const cap = buildCapsule(day, startHHMM, c.name||'', '', false);
+      const cap = buildCapsule(day, startHHMM, c.name||'', '', false, true);
       item.appendChild(cap);
 
       const teacherRoom = [c.teacher||'', c.room||''].filter(Boolean).join(' · ');
@@ -1369,7 +1405,7 @@ const DISPLAY_FIELDS = {
   weeks: <?= $showWeeks?'true':'false' ?>
 };
 
-function buildCapsule(day, startHHMM, text, metaText, withMeta){
+function buildCapsule(day, startHHMM, text, metaText, withMeta, fullText=false){
   const seed = `${USER_ID}|${day}|${startHHMM||''}`;
   const color = colorFromSeed(seed);
   const span = document.createElement('span');
@@ -1377,7 +1413,12 @@ function buildCapsule(day, startHHMM, text, metaText, withMeta){
   span.style.setProperty('--cap-bg', color.bg);
   span.style.setProperty('--cap-bd', color.bd);
   const row = document.createElement('span'); row.className='cap-row';
-  const t   = document.createElement('span'); t.className='cap-text'; t.textContent = clampName(text || '');
+  const rawText = text || '';
+  const t   = document.createElement('span');
+  t.className='cap-text';
+  t.textContent = fullText ? rawText : clampName(rawText);
+  if (rawText) t.title = rawText;
+  if (fullText) t.classList.add('cap-text-full');
   row.appendChild(t);
   span.appendChild(row);
   if (withMeta && metaText){

@@ -316,7 +316,12 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
   .slot-mobile{ display:none; }
   .slot-badge { font-size: .75rem; }
   .cell { min-width: 140px; }
-  @media (max-width: 576px){ .cell{ min-width: 120px; } }
+  .table.table-bordered.align-middle.table-sm { margin-bottom: 0; }
+  @media (max-width: 576px){
+    .cell{ min-width: 79px; }
+    .cell .cell-content{ padding: .15rem .3rem; }
+    .card .card-body{ padding: .5rem; }
+  }
   .now-pill { background: #ffffffff; }
   thead.table-light th{text-align:center; white-space:nowrap; }
   .cell .cell-content{
@@ -388,6 +393,35 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
       font-size:12px;
       color: var(--bs-secondary-color) !important;
       line-height:1;
+    }
+    .cell .capsule{
+      display:inline-flex;
+      width: 3.8em;
+      max-width: 3.8em;
+      box-sizing: border-box;
+      align-items: flex-start;
+      padding: .24rem .2rem .28rem .2rem;
+      line-height: 1.15;
+    }
+    .cell .capsule .cap-row{
+      display:block;
+      white-space: normal;
+      width: 100%;
+      max-width: 100%;
+    }
+    .cell .capsule .cap-text,
+    .cell .capsule .cap-meta{
+      display:block;
+      width: 100%;
+      max-width:100%;
+      white-space:normal;
+      overflow:visible;
+      text-overflow:clip;
+      overflow-wrap:anywhere;
+      word-break:break-all;
+    }
+    .cell .capsule .cap-text{
+      font-weight:500;
     }
   }
 </style>
@@ -652,7 +686,12 @@ function periodStartFromList(periods){ const arr=(periods||[]).map(p=>PERIOD_STA
 /* ======= 胶囊渲染与配色（与 index 同步） ======= */
 const USER_ID = 0; // 共享页不绑定访问者账号，颜色仅用上课时间稳定
 const NAME_MAX = 5;
-function clampName(s, n=NAME_MAX){ if(!s) return ''; const arr = Array.from(s); return arr.length>n?arr.slice(0,n).join('')+'…':s; }
+function clampName(s, n=NAME_MAX){
+  if(!s) return '';
+  if (window.matchMedia('(max-width: 576px)').matches) return s;
+  const arr = Array.from(s);
+  return arr.length>n ? arr.slice(0,n).join('')+'…' : s;
+}
 function djb2(str){ let h=5381; for (let i=0;i<str.length;i++){ h=((h<<5)+h)+str.charCodeAt(i); h|=0; } return h>>>0; }
 function hsl(h,s,l){ return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`; }
 function colorFromSeed(seed){ const hv=djb2(String(seed)); const h=hv%360; return { bg:hsl(h,70,92), bd:hsl(h,65,55) }; }
