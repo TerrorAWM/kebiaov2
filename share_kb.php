@@ -40,6 +40,14 @@ function calc_week_no(DateTime $now, string $startDateYmd, string $tz): int {
     $diffDays = (int)$start->diff($now2)->format('%r%a'); if ($diffDays < 0) return 0; return (int)floor($diffDays / 7) + 1;
 }
 
+function calc_week_range(string $startDateYmd, int $weekNo, string $tz): array {
+    $base = new DateTime($startDateYmd . ' 00:00:00', new DateTimeZone($tz));
+    $offsetWeeks = ($weekNo <= 0) ? -1 : ($weekNo - 1);
+    $weekStart = (clone $base)->modify(($offsetWeeks * 7) . ' days');
+    $weekEnd = (clone $weekStart)->modify('+6 days');
+    return [$weekStart, $weekEnd];
+}
+
 
 // ========== 读取参数与共享链接（兼容 token/pass & t/p） ==========
 $rawToken = $_GET['t']     ?? $_GET['token'] ?? '';
@@ -152,11 +160,14 @@ render_page($link, $schedule, [
     'tzMode'      => $tzMode,
     'tzValue'     => $tzValue,
     'displayFields' => $displayFields,
+    'allowWeekNav' => (int)($link['allow_week_nav'] ?? 0) === 1,
 ], null, $token);
 
 // ======================= 页面渲染函数 =======================
 function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, bool $needPass=false) {
     $showAll = isset($_GET['all']) ? (bool)$_GET['all'] : false;
+    $allowWeekNav = !empty($opts['allowWeekNav']);
+    if (!$allowWeekNav) $showAll = false;
 
     $weekdayNames = [1=>'星期一','星期二','星期三','星期四','星期五','星期六','星期日'];
     $enabledDays  = $schedule['enabled_days'] ?? [1,2,3,4,5,6,7]; sort($enabledDays);
@@ -180,6 +191,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     $nowCourses = [];
     $upcomingWithin15 = [];
     $upcomingDeadline = null;
+    $weekRangeLabel = '';
 
     // 服务端只用于首屏：使用显示时区？这里与原站一致：计算用课表时区，显示另说
     $displayTzServer = ($tzMode === 'custom' || $tzMode === 'client_fixed') ? ($tzValue ?: $tzTimetable) : $tzTimetable;
@@ -188,6 +200,10 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
         $nowDisplay = new DateTime('now', new DateTimeZone($displayTzServer));
         $nowCalc    = (clone $nowDisplay)->setTimezone(new DateTimeZone($tzTimetable));
         $weekNo     = calc_week_no($nowCalc, $startDate, $tzTimetable);
+        [$weekStart, $weekEnd] = calc_week_range($startDate, $weekNo, $tzTimetable);
+        $weekRangeLabel = (int)$weekStart->format('n') . '.' . (int)$weekStart->format('j')
+            . ' - '
+            . (int)$weekEnd->format('n') . '.' . (int)$weekEnd->format('j');
         $weekdayCalc= (int)$nowCalc->format('N'); // 1..7
         $nowHHMM    = $nowCalc->format('H:i');
 
@@ -258,6 +274,23 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
         $weekNo = 0;
     }
 
+    $navCourses = [];
+    if ($allowWeekNav) {
+        foreach ($courses as $c) {
+            $item = [
+                'day' => (int)($c['day'] ?? 0),
+                'periods' => array_values(array_map('intval', $c['periods'] ?? [])),
+                'weeks' => (string)($c['weeks'] ?? ''),
+                'week_type' => (string)($c['week_type'] ?? 'all'),
+            ];
+            if ($showName && isset($c['name'])) $item['name'] = $c['name'];
+            if ($showTeacher && isset($c['teacher'])) $item['teacher'] = $c['teacher'];
+            if ($showRoom && isset($c['room'])) $item['room'] = $c['room'];
+            if ($showWeeks && isset($c['weeks'])) $item['weeks'] = (string)$c['weeks'];
+            $navCourses[] = $item;
+        }
+    }
+
     // 头部与主体输出（包含密码输入态 / 错误态）
     ?>
 <!doctype html>
@@ -267,6 +300,7 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>共享课表</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<link rel="stylesheet" href="./assets/fontawesome/css/all.min.css">
 <style>
   body { background: #f6f7fb; }
   @media (min-width: 992px){
@@ -308,6 +342,22 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
   .cell-pager { display:flex; align-items:center; justify-content:center; gap:.5rem; margin-top:.25rem; }
   .cell-pager .btn { padding: 0 .4rem; line-height: 1.2; }
   .cell-pager .page-indicator { font-size:.75rem; color:#6b7280; }
+  .week-nav-line { display:inline-flex; align-items:center; gap:.5rem; }
+  .week-nav-btn {
+    border: 1px solid transparent;
+    background: transparent;
+    color: #334155;
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .week-nav-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .week-nav-btn i { font-size: .72rem; }
 </style>
 </head>
 <body>
@@ -351,7 +401,11 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
           切换到<?=$otherLabel?>
         </a>
       <?php endif; ?>
-      <a class="btn btn-sm btn-outline-secondary" href="?t=<?=h($token)?><?= isset($_GET['view'])?('&view='.h($_GET['view'])):'' ?><?= isset($_GET['all'])?'':'&all=1' ?><?= isset($_GET['p'])?('&p='.h($_GET['p'])):'' ?>">切换：<?= $showAll ? '仅本周' : '全部周' ?></a>
+      <?php if ($allowWeekNav): ?>
+        <a class="btn btn-sm btn-outline-secondary" id="toggleAllLink" href="?t=<?=h($token)?><?= isset($_GET['view'])?('&view='.h($_GET['view'])):'' ?><?= isset($_GET['all'])?'':'&all=1' ?><?= isset($_GET['p'])?('&p='.h($_GET['p'])):'' ?>">切换：<?= $showAll ? '仅本周' : '全部周' ?></a>
+      <?php else: ?>
+        <span class="badge text-bg-light border">仅当前周</span>
+      <?php endif; ?>
     </div>
   </div>
 
@@ -395,7 +449,16 @@ function render_page($link, $schedule, $opts, ?string $errorMsg, string $token, 
     <div class="text-center mb-3">
       <h2 class="mb-1"><span id="nowTime" data-tz="<?= h(($tzMode==='custom'||$tzMode==='client_fixed') ? ($tzValue ?: $tzTimetable) : '') ?>"></span></h2>
       <div class="text-muted">
-        <?php if ($startDate): ?>当前第 <b><?= (int)$weekNo ?></b> 周<?php else: ?><span class="text-warning">（尚未设置课表开始日期）</span><?php endif; ?>
+        <?php if ($startDate): ?>
+          <div class="week-nav-line">
+            <?php if ($allowWeekNav): ?><button type="button" class="week-nav-btn" id="weekPrevBtn" aria-label="上一周"><i class="fa-solid fa-chevron-left"></i></button><?php endif; ?>
+            <span>当前第 <b id="weekNoValue"><?= (int)$weekNo ?></b> 周</span>
+            <?php if ($allowWeekNav): ?><button type="button" class="week-nav-btn" id="weekNextBtn" aria-label="下一周"><i class="fa-solid fa-chevron-right"></i></button><?php endif; ?>
+          </div>
+          <div class="small mt-1" id="weekRangeText"><?= h($weekRangeLabel) ?></div>
+        <?php else: ?>
+          <span class="text-warning">（尚未设置课表开始日期）</span>
+        <?php endif; ?>
         <!-- <span class="ms-2 badge text-bg-light border">计算时区：<?= h($tzTimetable) ?></span> -->
         <!-- <span class="ms-2 badge text-bg-light border">显示时区：<?= h(($tzMode==='custom'||$tzMode==='client_fixed') ? ($tzValue ?: $tzTimetable) : '客户端自动') ?></span> -->
       </div>
@@ -534,6 +597,12 @@ const DISPLAY_FIELDS = {
   weeks: <?= $showWeeks?'true':'false' ?>
 };
 const TIMESLOTS = <?= json_encode(array_values($timeslots ?? []), JSON_UNESCAPED_UNICODE) ?>;
+const ENABLED_DAYS = <?= json_encode(array_values($enabledDays ?? []), JSON_UNESCAPED_UNICODE) ?>;
+const ALLOW_WEEK_NAV = <?= $allowWeekNav ? 'true' : 'false' ?>;
+const BASE_WEEK_NO = <?= (int)$weekNo ?>;
+const START_DATE = <?= json_encode($startDate) ?>;
+const INITIAL_SHOW_ALL = <?= $showAll ? 'true' : 'false' ?>;
+const ALL_COURSES = <?= json_encode($allowWeekNav ? array_values($navCourses) : [], JSON_UNESCAPED_UNICODE) ?>;
 const PERIOD_START = {}; for (const s of TIMESLOTS){ if (s && s.idx!=null && s.start) PERIOD_START[parseInt(s.idx,10)] = String(s.start); }
 function periodStartFromList(periods){ const arr=(periods||[]).map(p=>PERIOD_START[p]).filter(Boolean).sort(); return arr.length?arr[0]:''; }
 
@@ -601,8 +670,8 @@ function renderCell(td){
   if (!items.length){ box.innerHTML = '<span class="text-muted"></span>'; } else { items.forEach(c=> box.appendChild(buildCellItem(c, day))); }
   if (list.length > per){
     const pager = document.createElement('div'); pager.className='cell-pager';
-    const prev = document.createElement('button'); prev.type='button'; prev.className='btn btn-sm btn-outline-secondary'; prev.textContent='‹';
-    const next = document.createElement('button'); next.type='button'; next.className='btn btn-sm btn-outline-secondary'; next.textContent='›';
+    const prev = document.createElement('button'); prev.type='button'; prev.className='btn btn-sm btn-outline-secondary'; prev.innerHTML='<i class=\"fa-solid fa-angle-left\"></i>';
+    const next = document.createElement('button'); next.type='button'; next.className='btn btn-sm btn-outline-secondary'; next.innerHTML='<i class=\"fa-solid fa-angle-right\"></i>';
     const indi = document.createElement('span'); indi.className='page-indicator'; indi.textContent = (page+1) + '/' + totalPages;
     prev.onclick = (ev)=>{ ev.stopPropagation(); changeCellPage(td, -1); };
     next.onclick = (ev)=>{ ev.stopPropagation(); changeCellPage(td, +1); };
@@ -616,6 +685,154 @@ function changeCellPage(td, dir){
   let p = parseInt(td.getAttribute('data-page')||'0', 10); if (isNaN(p)) p = 0;
   p += dir; if (p < 0) p = total - 1; if (p >= total) p = 0; td.setAttribute('data-page', String(p)); renderCell(td);
 }
+
+const WEEK_STATE = {
+  weekNo: BASE_WEEK_NO,
+  minWeekNo: BASE_WEEK_NO <= 0 ? 0 : 1,
+  showAll: INITIAL_SHOW_ALL,
+  cache: new Map(),
+};
+
+function parseWeeksStringJS(s){
+  const text = String(s || '').trim();
+  if (!text) return [];
+  const out = [];
+  const parts = text.split(/\s*,\s*/);
+  for (const p0 of parts){
+    const p = p0.trim();
+    const m = p.match(/^(\d{1,2})\s*-\s*(\d{1,2})$/);
+    if (m){
+      let a = parseInt(m[1], 10);
+      let b = parseInt(m[2], 10);
+      if (a > b){ const t = a; a = b; b = t; }
+      for (let i = a; i <= b; i++) out.push(i);
+      continue;
+    }
+    if (/^\d{1,2}$/.test(p)) out.push(parseInt(p, 10));
+  }
+  return [...new Set(out)].sort((a,b)=>a-b);
+}
+
+function courseInWeek(c, weekNo){
+  const weeksArr = parseWeeksStringJS(c.weeks || '');
+  let ok = weeksArr.includes(weekNo);
+  const wt = String(c.week_type || 'all').toLowerCase();
+  if (ok && wt === 'odd' && weekNo % 2 === 0) ok = false;
+  if (ok && wt === 'even' && weekNo % 2 === 1) ok = false;
+  return ok;
+}
+
+function buildGridForWeek(weekNo, showAll){
+  const grid = {};
+  for (const d of ENABLED_DAYS) grid[d] = {};
+  for (const c of ALL_COURSES){
+    const day = parseInt(c.day || 0, 10);
+    if (!grid[day]) continue;
+    if (!showAll && !courseInWeek(c, weekNo)) continue;
+    const periods = Array.isArray(c.periods) ? c.periods : [];
+    for (const pRaw of periods){
+      const p = parseInt(pRaw, 10);
+      if (!Number.isFinite(p) || p <= 0) continue;
+      if (!grid[day][p]) grid[day][p] = [];
+      grid[day][p].push(c);
+    }
+  }
+  return grid;
+}
+
+function cacheWeek(weekNo){
+  if (weekNo < WEEK_STATE.minWeekNo) return;
+  if (!WEEK_STATE.cache.has(weekNo)) {
+    WEEK_STATE.cache.set(weekNo, buildGridForWeek(weekNo, false));
+  }
+}
+
+function syncWeekCache(){
+  const keep = new Set([WEEK_STATE.weekNo - 1, WEEK_STATE.weekNo, WEEK_STATE.weekNo + 1].filter(w => w >= WEEK_STATE.minWeekNo));
+  for (const w of keep) cacheWeek(w);
+  for (const key of Array.from(WEEK_STATE.cache.keys())){
+    if (!keep.has(key)) WEEK_STATE.cache.delete(key);
+  }
+}
+
+function parseYmdToUtcDate(ymd){
+  const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return null;
+  return new Date(Date.UTC(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10)));
+}
+
+function formatWeekRangeLabel(weekNo){
+  const base = parseYmdToUtcDate(START_DATE);
+  if (!base) return '';
+  const start = new Date(base.getTime());
+  const offsetDays = (weekNo <= 0 ? -7 : (weekNo - 1) * 7);
+  start.setUTCDate(start.getUTCDate() + offsetDays);
+  const end = new Date(start.getTime());
+  end.setUTCDate(end.getUTCDate() + 6);
+  return `${start.getUTCMonth() + 1}.${start.getUTCDate()} - ${end.getUTCMonth() + 1}.${end.getUTCDate()}`;
+}
+
+function setGridToDom(grid){
+  document.querySelectorAll('td.cell[data-day][data-period]').forEach(td => {
+    const day = parseInt(td.getAttribute('data-day') || '0', 10);
+    const period = parseInt(td.getAttribute('data-period') || '0', 10);
+    const list = (grid?.[day]?.[period]) || [];
+    if (list.length > 0) td.setAttribute('data-courses', JSON.stringify(list));
+    else td.removeAttribute('data-courses');
+    td.setAttribute('data-page', '0');
+    renderCell(td);
+  });
+}
+
+function syncWeekHeader(){
+  const weekNoEl = document.getElementById('weekNoValue');
+  if (weekNoEl) weekNoEl.textContent = String(WEEK_STATE.weekNo);
+  const rangeEl = document.getElementById('weekRangeText');
+  if (rangeEl) rangeEl.textContent = formatWeekRangeLabel(WEEK_STATE.weekNo);
+  const prevBtn = document.getElementById('weekPrevBtn');
+  if (prevBtn) prevBtn.disabled = WEEK_STATE.weekNo <= WEEK_STATE.minWeekNo;
+
+  const toggle = document.getElementById('toggleAllLink');
+  if (toggle) toggle.textContent = `切换：${WEEK_STATE.showAll ? '仅本周' : '全部周'}`;
+}
+
+function applyWeekView(){
+  if (!ALLOW_WEEK_NAV) return;
+  const grid = WEEK_STATE.showAll
+    ? buildGridForWeek(WEEK_STATE.weekNo, true)
+    : (WEEK_STATE.cache.get(WEEK_STATE.weekNo) || buildGridForWeek(WEEK_STATE.weekNo, false));
+  setGridToDom(grid);
+  syncWeekHeader();
+}
+
+function initWeekNav(){
+  if (!ALLOW_WEEK_NAV || !START_DATE) return;
+  syncWeekCache();
+  applyWeekView();
+
+  const prevBtn = document.getElementById('weekPrevBtn');
+  const nextBtn = document.getElementById('weekNextBtn');
+  const toggleAllLink = document.getElementById('toggleAllLink');
+
+  const moveWeek = (dir)=>{
+    if (WEEK_STATE.showAll) WEEK_STATE.showAll = false;
+    const target = WEEK_STATE.weekNo + dir;
+    if (target < WEEK_STATE.minWeekNo) return;
+    WEEK_STATE.weekNo = target;
+    syncWeekCache();
+    applyWeekView();
+    clearHL();
+  };
+
+  prevBtn?.addEventListener('click', ()=> moveWeek(-1));
+  nextBtn?.addEventListener('click', ()=> moveWeek(+1));
+  toggleAllLink?.addEventListener('click', (ev)=>{
+    ev.preventDefault();
+    WEEK_STATE.showAll = !WEEK_STATE.showAll;
+    applyWeekView();
+  });
+}
+
 (function initCells(){
   document.querySelectorAll('td.cell[data-courses]').forEach(td => renderCell(td));
   document.querySelectorAll('[data-capsule]').forEach(el=>{
@@ -626,11 +843,12 @@ function changeCellPage(td, dir){
     el.style.setProperty('--cap-bd', color.bd);
     const t = el.querySelector('.cap-text'); if (t){ t.textContent = clampName(t.textContent || ''); }
   });
+  initWeekNav();
 })();
 
 /* ===== 实时高亮（计算时区固定为课表时区） ===== */
 const CALC_TZ  = "<?= h($tzTimetable) ?>";
-const DAYS     = <?= json_encode(array_values($enabledDays ?? []), JSON_UNESCAPED_UNICODE) ?>;
+const DAYS     = ENABLED_DAYS;
 function nowInTZ(tz){
   const f = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour12:false, year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', weekday:'short' });
   const parts = Object.fromEntries(f.formatToParts(new Date()).map(p=>[p.type,p.value]));
@@ -662,6 +880,10 @@ function findNext(dayToday, hhmm, slots){
 (function liveHighlight(){
   const slots = sortSlots(TIMESLOTS);
   function tick(){
+    if (START_DATE && WEEK_STATE.weekNo !== BASE_WEEK_NO){
+      clearHL();
+      return;
+    }
     clearHL();
     const {hhmm, day} = nowInTZ(CALC_TZ);
     markCurrent(day, hhmm, slots);
